@@ -397,30 +397,37 @@ function dictScore(answer, w){
     s: same ? 100 : combine(semV, surf), sem: roundHalf(semV), surf: roundHalf(surf),
     path: known ? path : [a, w], why: known ? "" : "사전에 없는 단어라 글자 겹침만 반영", src:"dict", known};
 }
-/* 방장이 쓰는 채점 진입점: Claude 모드면 Claude, 실패하면 사전으로 대신 */
-async function scoreHint(ans, w, giver){
-  const H = S.H;
-  if(H.engine === "claude"){
-    try{ const prof = await ensureProfile(giver, H.round); const r = await aiScore(ans, w, H.settings.english, H.settings.ai, prof); r.src = "claude"; return r; }
-    catch(e){ try{ await loadDict(); }catch{ throw e; } if(!inDict(ans)) throw e; }
-  }
-  await loadDict(); return dictScore(ans, w);
+/* 채점은 그 단어의 주인(출제자) 폰이 한다 — 히든 워드는 본인 폰에만 있고 아무에게도 보내지 않는다 */
+const LSIM = LS.get("sims", {});
+function saveLSIM(){ const k = Object.keys(LSIM); if(k.length > 600) k.slice(0, k.length - 600).forEach(x => delete LSIM[x]); LS.set("sims", LSIM); }
+const profCache = {};
+function myProfile(ans){
+  const k = norm(ans);
+  if(!profCache[k]) profCache[k] = aiProfile(ans, game()?.settings.ai).catch(() => { delete profCache[k]; return null; });
+  return profCache[k];
 }
-async function scoreMany(ans, words, giver){
-  const H = S.H; if(!words.length) return {};
-  if(H.engine === "claude"){
-    try{ const prof = await ensureProfile(giver, H.round); return await aiPaths(ans, prof, words, true, H.settings.ai); }
-    catch(e){ try{ await loadDict(); }catch{ throw e; } if(!inDict(ans)) throw e; }
+async function scoreLocal(ans, words, G, english){
+  const out = {}; if(!words.length) return out;
+  if(G.engine === "claude" && S.sample && S.localAI !== false){
+    try{
+      const prof = await myProfile(ans);
+      const r = await aiPaths(ans, prof, words, english, G.settings.ai);
+      for(const [w, x] of Object.entries(r)){ x.src = "claude"; out[w] = x; }
+      return out;
+    }catch(e){ S.localAI = false; toast(aiErrText(e) + " · 내장 사전으로 채점할게요"); }
   }
-  await loadDict(); const out = {}; words.forEach(w => out[w] = dictScore(ans, w)); return out;
+  await loadDict();
+  words.forEach(w => out[w] = dictScore(ans, w));
+  return out;
 }
+const myWord = G => LS.get(`pick:${G.gid}:${G.round}`, "");
 const engineName = G => G?.engine === "dict" ? "내장 사전" : "Claude AI";
 
 function aiErrText(e){
   const c = e?.code;
   if(c === "no_ai" || c === "capability_disabled" || c === "capability_removed") return "이 화면(Claude 앱 등)에선 AI 채점을 쓸 수 없어요. 휴대폰 사파리·크롬에서 claude.ai에 로그인해 이 링크를 여세요";
   if(c === "not_granted") return "AI 사용 허용을 거절해서 막혔어요. 페이지를 새로고침한 뒤 '허용'을 눌러 주세요";
-  if(c === "sampling_disabled") return "이 계정에서는 Claude AI를 쓸 수 없어요. 다른 계정의 기기를 딜러로 해 주세요";
+  if(c === "sampling_disabled") return "이 계정에서는 Claude AI를 쓸 수 없어요. 채점 방식을 ‘자동’이나 ‘내장 사전’으로 바꿔 주세요";
   if(c === "rate_limited") return "AI 사용량이 잠시 몰렸어요. 조금 뒤 다시 시도해 주세요";
   if(c === "invalid_json") return "AI 답을 읽지 못했어요. 다시 시도해 주세요";
   return "AI 연결이 잠시 불안정해요. 다시 시도해 주세요";
@@ -547,7 +554,7 @@ async function boot(){
   S.ready = true;
   if(S.code && db) joinGame(S.code, true); else render();
   setInterval(tickClock, 250);
-  setInterval(() => { if(S.isHost) hostKick(); }, 1000);
+  setInterval(() => { maybeTakeOver(); if(S.isHost) hostKick(); giverJudge(); }, 1000);
   document.addEventListener("visibilitychange", () => { if(!document.hidden && S.isHost) wake(); });
 }
 
@@ -569,8 +576,7 @@ async function createGame(){
     order:[], round:1, turnIdx:0, turn:null, log:[], createdAt:Date.now(), hostNow:Date.now()};
   try{ await S.db.doc("hw/" + code).set(H); }
   catch(e){ return toast(e?.code === "invalid_argument" ? "이 계정은 방을 만들 권한이 없어요. 친구가 만든 방 코드로 들어가 주세요" : "방을 만들지 못했어요. 다시 시도해 주세요"); }
-  S.H = H; S.isHost = true; S.priv = {secrets:{}};
-  await loadHostPrivate(code);
+  S.H = H; S.isHost = true;
   joinGame(code);
   wake();
 }
@@ -604,46 +610,25 @@ function joinGame(code, silent){
 }
 function leaveGame(quiet){
   S.unsub?.(); S.unsub = null; S.G = null; S.H = null; S.isHost = false; S.code = ""; LS.set("code", "");
-  pres({g:null, sec:null, act:null, gs:null});
+  pres({g:null, pk:null, act:null, gs:null, jd:null, cfg:null, start:null, again:null});
   S.pendingK = null; render();
   if(!quiet) toast("방에서 나왔어요");
 }
 
-/* 참가자 쪽 반응: 저장 확인되면 비밀 단어를 presence에서 지운다 */
+/* 참가자 쪽 반응 */
 function onGame(){
   const G = game(); if(!G) return;
-  const me = G.players?.[S.uid];
-  if(S.myPres.sec && me && me.picked === G.round) pres({sec:null});
   if(S.pendingK && G.turn && (G.turn.seen || []).includes(S.pendingK)) { S.pendingK = null; S.pendingW = ""; }
   if(S.pendingK && (!G.turn || G.phase !== "hint")) { S.pendingK = null; S.pendingW = ""; }
   if(G.phase !== "guess") S.chanceOn = false;
+  if(G.phase !== "lobby" && G.phase !== "final") loadDict().catch(() => {});
+  giverJudge();
 }
 
-/* ================= 방장(딜러) 로직 ================= */
-async function loadHostPrivate(code){
-  const pdoc = S.db.doc(`data/users/${S.uid}/hw-${code}`);
-  const sdoc = S.db.doc(`data/users/${S.uid}/hw-sims`);
-  const [p, s] = await Promise.all([pdoc.get().catch(() => null), sdoc.get().catch(() => null)]);
-  S.priv = p?.exists ? clone(p.data()) : (S.priv || {secrets:{}});
-  S.priv.secrets ||= {};
-  S.sims = s?.exists ? clone(s.data()) : {m:{}};
-  S.sims.m ||= {};
-}
-let privChain = Promise.resolve();
-function savePriv(){
-  const body = clone(S.priv), code = S.code;
-  privChain = privChain.then(() => S.db.doc(`data/users/${S.uid}/hw-${code}`).set(body));
-  return privChain;
-}
-let simsTimer = 0;
-function saveSims(){
-  clearTimeout(simsTimer);
-  simsTimer = setTimeout(() => {
-    const keys = Object.keys(S.sims.m);
-    if(keys.length > 1500) keys.slice(0, keys.length - 1500).forEach(k => delete S.sims.m[k]);
-    S.db.doc(`data/users/${S.uid}/hw-sims`).set(clone(S.sims)).catch(() => {});
-  }, 1500);
-}
+/* ================= 자동 진행 엔진 =================
+   진행자는 없다. 방에 있는 폰 중 하나(처음엔 방을 만든 폰)가 보이지 않게 타이머·차례만 굴리고,
+   그 폰이 나가면 남은 폰 중 하나가 자동으로 이어받는다. 엔진 폰은 누구의 히든 워드도 모른다.
+   힌트 채점과 정답 판정은 그 단어의 주인(출제자) 폰이 자동으로 한다. */
 let commitChain = Promise.resolve(), commitQueued = false;
 function commit(){
   render();
@@ -657,10 +642,9 @@ function commit(){
     commitChain = commitChain.then(() => S.db.doc("hw/" + code).set(body)).catch(e => toast("저장 실패: " + (e?.code || "연결")));
   }, 60);
 }
-async function resumeHost(){
-  await loadHostPrivate(S.H.code);
+function resumeHost(){
   const T = S.H.turn;
-  if(T){ T.busy = false; if(S.H.phase === "judging"){ S.H.phase = "guess"; T.deadline = Date.now(); } }
+  if(T && S.H.phase === "judging" && !T.jdl) T.jdl = Date.now() + 40000;
   commit(); wake();
 }
 let wakeLock = null;
@@ -674,16 +658,18 @@ function onlineSet(){
   if(S.uid && S.code && S.myPres.g === S.code) s.add(S.uid);
   return s;
 }
-const secretOf = (uid, r) => S.priv?.secrets?.[uid]?.[r] || null;
-/* 정답 단어의 뜻 목록을 한 번 만들어 두고 그 단어의 모든 채점에 같은 기준으로 쓴다 */
-const profBusy = {};
-function ensureProfile(u, r){
-  const ans = secretOf(u, r); if(!ans || !S.sims) return Promise.resolve(null);
-  const key = norm(ans); S.sims.p ||= {};
-  if(S.sims.p[key]) return Promise.resolve(S.sims.p[key]);
-  if(!profBusy[key]) profBusy[key] = aiProfile(ans, S.H?.settings.ai).then(p => { S.sims.p[key] = p; saveSims(); return p; })
-    .catch(() => null).finally(() => { delete profBusy[key]; });
-  return profBusy[key];
+
+/* 엔진 폰이 사라지면 남은 사람 중 한 명(아이디 순 첫 번째)이 이어받는다 */
+function maybeTakeOver(){
+  const G = S.G;
+  if(!G || S.isHost || !S.code || !G.players?.[S.uid]) return;
+  if(onlineSet().has(G.hostUid)){ S.hostSeen = Date.now(); return; }
+  if(!S.hostSeen) S.hostSeen = Date.now();
+  if(Date.now() - S.hostSeen < 12000) return;
+  const cand = [...onlineSet()].filter(u => G.players[u]).sort()[0];
+  if(cand !== S.uid) return;
+  S.H = clone(G); S.H.hostUid = S.uid; S.isHost = true;
+  resumeHost();
 }
 
 let hostBusy = false;
@@ -693,194 +679,222 @@ async function hostKick(){
   try{ await hostStep(); }catch(e){ console.error(e); }
   finally{ hostBusy = false; }
 }
+const SETTING_KEYS = {rounds:[1, 3], maxTries:[5, 10], hintSec:[60, 900], guessSec:[30, 300], chances:[0, 3]};
+function applyCfg(H, k, v){
+  if(H.phase !== "lobby") return false;
+  if(k in SETTING_KEYS){ const [lo, hi] = SETTING_KEYS[k]; const n = Math.round(Number(v)); if(!Number.isFinite(n)) return false; H.settings[k] = Math.max(lo, Math.min(hi, n)); if(k === "chances") Object.values(H.players).forEach(p => p.chances = H.settings.chances); return true; }
+  if(k === "english" || k === "lenient"){ H.settings[k] = !!v; return true; }
+  if(k === "ai" && ["auto", "claude", "fast", "dict"].includes(v)){ H.settings.ai = v; return true; }
+  return false;
+}
 async function hostStep(){
   const H = S.H, now = Date.now(); let dirty = false;
-  if(!S.priv || !S.sims) return;
-  H.kicked ||= [];
-  // 1) 참가자 등록·닉네임 갱신
+  H.seenReq ||= {};
+  const on = onlineSet();
+  // 1) 참가자 등록·닉네임
   for(const p of here()){
-    const u = uidOf(p); if(!u || H.kicked.includes(u)) continue;
+    const u = uidOf(p); if(!u) continue;
     const nick = cleanNick(p.presence.nick) || "플레이어";
     if(!H.players[u]){ H.players[u] = {nick, score:0, chances:H.settings.chances, picked:0, joined:now}; dirty = true; }
     else if(H.players[u].nick !== nick){ H.players[u].nick = nick; dirty = true; }
   }
-  // 2) 히든 워드 접수 → 방장 비공개 영역에만 저장
-  if(H.phase !== "final"){
-    for(const p of here()){
-      const u = uidOf(p), sec = p.presence.sec;
-      if(!u || !sec || sec.r !== H.round || !H.players[u] || H.players[u].picked === H.round) continue;
-      const w = checkWord(deobf(sec.w, H.gid), {english:true}).w;
-      if(!w) continue;
-      S.priv.secrets[u] = {...(S.priv.secrets[u] || {}), [H.round]: w};
-      try{ await savePriv(); H.players[u].picked = H.round; dirty = true; if(H.engine === "claude") ensureProfile(u, H.round); }catch{}
+  // 2) 누구나 보내는 요청: 설정 변경·시작·새 게임 (같은 요청은 한 번만)
+  for(const p of here()){
+    const u = uidOf(p), pr = p.presence; if(!u || !H.players[u]) continue;
+    for(const kind of ["cfg", "start", "again"]){
+      const req = pr[kind]; if(!req || typeof req.t !== "number") continue;
+      const key = `${u}:${kind}`; if((H.seenReq[key] || 0) >= req.t) continue;
+      H.seenReq[key] = req.t; dirty = true;
+      if(kind === "cfg") applyCfg(H, req.k, req.v);
+      if(kind === "start" && H.phase === "lobby") await startGame(req.eng);
+      if(kind === "again" && H.phase === "final") newGame();
     }
   }
-  const T = H.turn, on = onlineSet();
+  // 3) 단어를 골랐다는 신호(단어 자체는 오지 않는다)
+  for(const p of here()){
+    const u = uidOf(p);
+    if(u && H.players[u] && p.presence.pk === `${H.gid}:${H.round}` && H.players[u].picked !== H.round){ H.players[u].picked = H.round; dirty = true; }
+  }
+  const T = H.turn;
   if(H.phase === "pick"){
     const pend = Object.keys(H.players).filter(u => on.has(u) && H.players[u].picked !== H.round);
-    const ready = Object.keys(H.players).filter(u => H.players[u].picked === H.round);
-    if(pend.length === 0 && ready.length >= 2){ startRoundTurns(); return; }
+    const ready = Object.keys(H.players).filter(u => H.players[u].picked === H.round && on.has(u));
+    if(ready.length >= 2 && (pend.length === 0 || now >= H.pickDl)){ startRoundTurns(); return; }
+  }
+  // 출제자가 20초 넘게 안 보이면 그 턴은 자동으로 넘긴다
+  if(T && ["hint", "guess", "judging"].includes(H.phase)){
+    if(on.has(T.giver)) T.goneAt = 0;
+    else if(!T.goneAt){ T.goneAt = now; dirty = true; }
+    else if(now - T.goneAt > 20000){ skipTurn("출제자 연결이 끊겨 이 턴은 넘어가요"); return; }
   }
   if(H.phase === "hint" && T){
-    const gp = presOf(T.giver), act = gp?.act;
-    if(act && typeof act.k === "string" && act.k.startsWith(`${T.id}.${T.stage}.`) && !T.seen.includes(act.k) && !T.busy){
+    const act = presOf(T.giver)?.act;
+    if(act && typeof act.k === "string" && act.k.startsWith(`${T.id}.${T.stage}.`) && !T.seen.includes(act.k)){
       T.seen.push(act.k); if(T.seen.length > 60) T.seen.shift();
-      const ans = secretOf(T.giver, H.round);
-      const chk = checkWord(deobf(act.w, H.gid), {english:H.settings.english});
-      const used = T.tries.some(t => deobf(t.w, H.gid) === chk.w);
-      if(chk.err || used || !ans){
-        T.tries.push({w: obf(chk.w || "?", H.gid), st:T.stage, ok:false, reason: obf(chk.err || (used ? "이미 시도한 단어" : "정답 정보 없음"), H.gid)});
-        commit(); return;
-      }
-      T.busy = true; commit();
-      const key = `v2|${H.engine}|${norm(ans)}|${chk.w}|${H.settings.english ? 1 : 0}`;
-      let r = S.sims.m[key];
-      if(!r){
-        try{ r = await scoreHint(ans, chk.w, T.giver); if(r.src === "claude" || r.known) { S.sims.m[key] = r; saveSims(); } }
-        catch(e){ T.busy = false; T.aiErr = aiErrText(e); commit(); return; }
-      }
-      T.busy = false; T.aiErr = "";
-      T.tries.push({w: obf(chk.w, H.gid), st:T.stage, ok:r.valid, s: r.valid ? r.s : null, note: obf([explain(r), r.why].filter(Boolean).join(" — "), H.gid), reason: obf(r.valid ? "" : (r.reason || "힌트로 쓸 수 없는 단어"), H.gid)});
+      const w = checkWord(deobf(act.w, H.gid), {english:H.settings.english}).w;
+      const used = w && T.tries.some(t => deobf(t.w, H.gid) === w);
+      const r = act.r || {}, sc = Number(r.s), ok = !!r.ok && Number.isFinite(sc) && !!w && !used;
+      T.tries.push({w: obf(w || "?", H.gid), st:T.stage, ok, s: ok ? roundHalf(sc) : null,
+        note: typeof r.n === "string" ? r.n.slice(0, 400) : "", reason: ok ? "" : (typeof r.e === "string" && r.e ? r.e.slice(0, 200) : obf(used ? "이미 시도한 단어" : "힌트로 쓸 수 없는 단어", H.gid))});
       const validN = T.tries.filter(t => t.st === T.stage && t.ok).length;
-      if(r.valid && r.s >= 95){ endHint(); return; }
+      if(ok && sc >= 95){ endHint(); return; }
       if(validN >= H.settings.maxTries){ endHint(); return; }
       commit(); return;
     }
-    if(now >= T.deadline && !T.busy){ endHint(); return; }
+    if(now >= T.deadline){ endHint(); return; }
   }
   if(H.phase === "guess" && T){
     const guessers = Object.keys(H.players).filter(u => u !== T.giver && on.has(u));
     const done = guessers.filter(u => { const g = presOf(u)?.gs; return g && g.k === T.gkey && g.done; });
-    if(now >= T.deadline || (guessers.length > 0 && done.length >= guessers.length)){ await judge(); return; }
+    if(now >= T.deadline || (guessers.length > 0 && done.length >= guessers.length)){ collectGuesses(); return; }
+  }
+  if(H.phase === "judging" && T){
+    const jd = presOf(T.giver)?.jd;
+    if(jd && jd.k === T.gkey){ finalize(jd); return; }
+    if(now >= T.jdl){ skipTurn("출제자 폰이 채점하지 못해 이 턴은 넘어가요"); return; }
   }
   if(H.phase === "result" && T && now >= T.deadline){ advance(); return; }
+  if(H.phase === "roundEnd" && now >= H.roundDl){ H.round++; startPick(); return; }
   if(dirty) commit();
 }
-function startRoundTurns(){
+async function startGame(eng){
+  const H = S.H, on = onlineSet();
+  if(Object.keys(H.players).filter(u => on.has(u)).length < 2) return;
+  H.engine = eng === "claude" && H.settings.ai !== "dict" ? "claude" : "dict";
+  H.round = 1; startPick();
+}
+function startPick(){
   const H = S.H;
-  const ready = Object.keys(H.players).filter(u => H.players[u].picked === H.round);
-  H.order = shuffle(ready); H.turnIdx = 0;
+  H.phase = "pick"; H.turn = null; H.pickDl = Date.now() + 90000; commit();
+}
+function newGame(){
+  const H = S.H;
+  H.gid = Math.random().toString(36).slice(2, 8);
+  Object.values(H.players).forEach(p => { p.score = 0; p.chances = H.settings.chances; p.picked = 0; });
+  Object.assign(H, {phase:"lobby", round:1, turnIdx:0, order:[], turn:null, log:[]});
+  commit();
+}
+function startRoundTurns(){
+  const H = S.H, on = onlineSet();
+  H.order = shuffle(Object.keys(H.players).filter(u => H.players[u].picked === H.round && on.has(u))); H.turnIdx = 0;
   startTurn();
 }
 function startTurn(){
-  const H = S.H;
-  while(H.turnIdx < H.order.length && !secretOf(H.order[H.turnIdx], H.round)) H.turnIdx++;
+  const H = S.H, on = onlineSet();
+  while(H.turnIdx < H.order.length && !(on.has(H.order[H.turnIdx]) && H.players[H.order[H.turnIdx]]?.picked === H.round)) H.turnIdx++;
   if(H.turnIdx >= H.order.length){
-    H.turn = null; H.phase = H.round < H.settings.rounds ? "roundEnd" : "final"; commit(); return;
+    H.turn = null;
+    if(H.round < H.settings.rounds){ H.phase = "roundEnd"; H.roundDl = Date.now() + 15000; }
+    else H.phase = "final";
+    commit(); return;
   }
   const giver = H.order[H.turnIdx];
-  H.turn = {id:`${H.round}-${H.turnIdx}`, giver, stage:1, tries:[], revealed:[], seen:[], busy:false, deadline: Date.now() + H.settings.hintSec * 1000, dur: H.settings.hintSec * 1000, gkey:"", res:null, gain:null, end:null, answer:null, aiErr:""};
+  H.turn = {id:`${H.round}-${H.turnIdx}`, giver, stage:1, tries:[], revealed:[], seen:[], deadline: Date.now() + H.settings.hintSec * 1000, dur: H.settings.hintSec * 1000, gkey:"", subs:null, res:null, gain:null, end:null, answer:null};
   H.phase = "hint"; commit();
 }
 function endHint(){
   const H = S.H, T = H.turn;
-  const valid = T.tries.filter(t => t.st === T.stage && t.ok).sort((a, b) => b.s - a.s);
-  const best = valid[0];
+  const best = T.tries.filter(t => t.st === T.stage && t.ok).sort((a, b) => b.s - a.s)[0];
   T.revealed.push(best ? {w: deobf(best.w, H.gid), s: best.s, st:T.stage, note: best.note || ""} : {w:null, s:null, st:T.stage});
   T.gkey = `${T.id}.${T.stage}`;
   T.deadline = Date.now() + H.settings.guessSec * 1000; T.dur = H.settings.guessSec * 1000;
   H.phase = "guess"; commit();
 }
-async function judge(){
-  const H = S.H, T = H.turn, ans = secretOf(T.giver, H.round), mult = H.round;
-  H.phase = "judging"; commit();
-  const subs = {};
+/* 추리 마감: 답안만 모아 두고, 채점은 출제자 폰이 한다 */
+function collectGuesses(){
+  const H = S.H, T = H.turn, subs = {};
   for(const u of Object.keys(H.players)){
     if(u === T.giver) continue;
     const g = presOf(u)?.gs;
     if(!g || g.k !== T.gkey || !Array.isArray(g.ws)) continue;
     const ws = [...new Set(g.ws.slice(0, 2).map(x => checkWord(deobf(x, H.gid), {english:true}).w).filter(Boolean))];
-    const allow = 1 + (H.players[u].chances > 0 ? 1 : 0);
-    const use = ws.slice(0, allow);
+    const use = ws.slice(0, 1 + (H.players[u].chances > 0 ? 1 : 0));
     if(use.length === 2) H.players[u].chances--;
-    if(use.length) subs[u] = use;
+    if(use.length) subs[u] = use.map(w => obf(w, H.gid));
   }
-  const uniq = [...new Set(Object.values(subs).flat())];
-  let ai = {}, aiFail = false;
-  try{ ai = await scoreMany(ans, uniq.filter(w => w !== norm(ans)), T.giver); }catch{ aiFail = true; }
-  const res = {}, winners = [];
-  for(const [u, ws] of Object.entries(subs)){
-    const list = ws.map(w => {
-      if(w === norm(ans)) return {w, ok:true, s:100, how:"정확"};
-      const a = ai[w];
-      const ok = !!(H.settings.lenient && a?.same);
-      return {w, ok, s: a ? a.s : null, how: ok ? "표기·번역 인정" : "", note: a ? obf(explain(a), H.gid) : ""};
+  T.subs = subs; T.jdl = Date.now() + 40000;
+  H.phase = "judging"; commit();
+}
+function finalize(jd){
+  const H = S.H, T = H.turn, mult = H.round, res = {}, winners = [];
+  for(const [u, arr] of Object.entries(T.subs || {})){
+    const got = Array.isArray(jd.res?.[u]) ? jd.res[u] : [];
+    res[u] = arr.map((ow, i) => {
+      const w = deobf(ow, H.gid), x = got[i] || {};
+      return {w, ok: !!x.ok, s: Number.isFinite(Number(x.s)) && x.s !== null ? roundHalf(Number(x.s)) : null, how: String(x.how || "").slice(0, 12), note: typeof x.note === "string" ? x.note.slice(0, 300) : ""};
     });
-    res[u] = list; if(list.some(x => x.ok)) winners.push(u);
+    if(res[u].some(x => x.ok)) winners.push(u);
   }
-  T.res = res; T.gain = {}; T.aiFail = aiFail;
-  if(winners.length){
-    winners.forEach(u => { H.players[u].score += mult; T.gain[u] = mult; });
-    T.end = "solved";
-  } else {
-    const pts = T.stage * mult;
-    H.players[T.giver].score += pts; T.gain[T.giver] = pts;
-    T.end = T.stage >= 3 ? "escaped" : null;
-  }
+  T.res = res; T.gain = {}; T.aiFail = !!jd.f;
+  if(winners.length){ winners.forEach(u => { H.players[u].score += mult; T.gain[u] = mult; }); T.end = "solved"; }
+  else { const pts = T.stage * mult; H.players[T.giver].score += pts; T.gain[T.giver] = pts; T.end = T.stage >= 3 ? "escaped" : null; }
   if(T.end){
-    T.answer = ans;
-    H.log.push({r:H.round, giver:T.giver, answer:ans, hints:T.revealed.map(h => h.w ? `${h.w} ${fmtS(h.s)}%` : "힌트 없음"), winners, end:T.end});
+    T.answer = checkWord(deobf(jd.a || "", H.gid), {english:true}).w || null;
+    H.log.push({r:H.round, giver:T.giver, answer:T.answer, hints:T.revealed.map(h => h.w ? `${h.w} ${fmtS(h.s)}%` : "힌트 없음"), winners, end:T.end});
   }
   T.deadline = Date.now() + 15000; T.dur = 15000;
   H.phase = "result"; commit();
 }
+function skipTurn(msg){
+  const H = S.H, T = H.turn; if(!T) return;
+  T.end = "skipped"; T.skipMsg = msg; T.res = T.res || {}; T.gain = {};
+  H.log.push({r:H.round, giver:T.giver, answer:null, hints:T.revealed.map(h => h.w ? `${h.w} ${fmtS(h.s)}%` : "힌트 없음"), winners:[], end:"skipped"});
+  T.deadline = Date.now() + 8000; T.dur = 8000; H.phase = "result"; commit();
+}
 function advance(){
   const H = S.H, T = H.turn;
   if(T && !T.end){
-    T.stage++; T.deadline = Date.now() + H.settings.hintSec * 1000; T.dur = H.settings.hintSec * 1000; T.res = null; T.gain = null; T.aiErr = "";
+    T.stage++; T.deadline = Date.now() + H.settings.hintSec * 1000; T.dur = H.settings.hintSec * 1000; T.res = null; T.gain = null; T.subs = null;
     H.phase = "hint"; commit(); return;
   }
   H.turnIdx++; startTurn();
 }
-/* 방장 버튼 */
-const HOST = {
-  async start(){
-    const H = S.H, on = onlineSet();
-    const n = Object.keys(H.players).filter(u => on.has(u)).length;
-    if(n < 2) return toast("2명 이상 모여야 시작할 수 있어요");
-    const mode = H.settings.ai;
-    let engine = "dict";
-    if(mode !== "dict"){
-      const ok = S.aiOk || (S.sample ? await testAI() : false);
-      if(ok) engine = "claude";
-      else if(mode !== "auto") return toast("Claude에 연결되지 않았어요. AI 채점을 '자동'이나 '내장 사전'으로 바꿔 주세요");
-    }
-    if(engine === "dict"){
-      try{ await loadDict(); }catch{ return toast("내장 사전을 불러오지 못했어요. 인터넷 연결을 확인해 주세요"); }
-      if(mode === "auto") toast("Claude 연결 없이 내장 사전으로 채점해요");
-    }
-    H.engine = engine; H.phase = "pick"; H.round = 1; commit();
-  },
-  pickNow(){
-    const H = S.H; const ready = Object.keys(H.players).filter(u => H.players[u].picked === H.round);
-    if(ready.length < 2) return toast("단어를 고른 사람이 2명 이상이어야 해요");
-    startRoundTurns();
-  },
-  endHintNow(){ const T = S.H.turn; if(T?.busy) return toast("채점이 끝난 뒤 눌러 주세요"); endHint(); },
-  skipTurn(){
-    const H = S.H, T = H.turn; if(!T) return;
-    T.end = "skipped"; T.answer = secretOf(T.giver, H.round); T.res = T.res || {}; T.gain = {};
-    H.log.push({r:H.round, giver:T.giver, answer:T.answer, hints:T.revealed.map(h => h.w ? `${h.w} ${fmtS(h.s)}%` : "힌트 없음"), winners:[], end:"skipped"});
-    T.deadline = Date.now() + 8000; T.dur = 8000; H.phase = "result"; commit();
-  },
-  closeGuess(){ S.H.turn.deadline = Date.now(); hostKick(); },
-  next(){ advance(); },
-  nextRound(){ const H = S.H; H.round++; H.phase = "pick"; H.turn = null; commit(); },
-  finish(){ const H = S.H; H.phase = "final"; H.turn = null; commit(); },
-  async again(){
-    const H = S.H;
-    H.gid = Math.random().toString(36).slice(2, 8);
-    Object.values(H.players).forEach(p => { p.score = 0; p.chances = H.settings.chances; p.picked = 0; });
-    Object.assign(H, {phase:"lobby", round:1, turnIdx:0, order:[], turn:null, log:[]});
-    S.priv = {secrets:{}}; await savePriv().catch(() => {}); commit();
-  },
-  kick(b){ const u = b.dataset.u; const H = S.H; if(u && u !== S.uid && H.phase === "lobby"){ delete H.players[u]; (H.kicked ||= []).push(u); commit(); } },
-};
+
+/* 출제자 폰: 추리 마감되면 내 단어로 답안을 자동 채점해 올린다 */
+async function giverJudge(){
+  const G = game(); const T = G?.turn;
+  if(!T || G.phase !== "judging" || T.giver !== S.uid || !T.subs || S.judgedK === T.gkey) return;
+  S.judgedK = T.gkey;
+  const ans = myWord(G);
+  if(!ans){ toast("이 폰에 내 히든 워드 기록이 없어 채점할 수 없어요"); return; }
+  const subs = {}; for(const [u, arr] of Object.entries(T.subs)) subs[u] = arr.map(x => deobf(x, G.gid));
+  const uniq = [...new Set(Object.values(subs).flat())].filter(w => w !== norm(ans));
+  let sc = {}, fail = false;
+  try{ sc = await scoreLocal(ans, uniq, G, true); }catch{ fail = true; }
+  const mk = withNote => { const res = {}; for(const [u, ws] of Object.entries(subs)) res[u] = ws.map(w => {
+    if(w === norm(ans)) return {ok:true, s:100, how:"정확"};
+    const a = sc[w], ok = !!(G.settings.lenient && a?.same);
+    return {ok, s: a ? a.s : null, how: ok ? "표기·번역 인정" : "", note: withNote && a ? obf(explain(a).slice(0, 40), G.gid) : ""};
+  }); return res; };
+  const jd = r => ({k:T.gkey, res:r, a:obf(ans, G.gid), f:fail});
+  S.myPres.jd = jd(mk(true));
+  try{ await S.room.presence({app:"hw", uid:S.uid, jd:S.myPres.jd}); }
+  catch{ S.myPres.jd = jd(mk(false)); S.room.presence({app:"hw", uid:S.uid, jd:S.myPres.jd}).catch(() => {}); }
+}
+
+/* 누구나 누르는 버튼 → 엔진 폰에 요청으로 전달 */
+function request(kind, extra = {}){
+  pres({[kind]:{t:Date.now(), ...extra}});
+  if(S.isHost) hostKick();
+}
+async function pressStart(){
+  const G = game(), on = onlineSet();
+  if(Object.keys(G.players).filter(u => on.has(u)).length < 2) return toast("2명 이상 모여야 시작할 수 있어요");
+  let eng = "dict";
+  if(G.settings.ai !== "dict" && S.sample){
+    const ok = S.aiOk || await testAI();
+    if(ok) eng = "claude";
+    else if(G.settings.ai !== "auto") return toast("Claude에 연결되지 않았어요. 채점 방식을 ‘자동’이나 ‘내장 사전’으로 바꿔 주세요");
+  }
+  try{ await loadDict(); }catch{ if(eng === "dict") return toast("내장 사전을 불러오지 못했어요. 인터넷 연결을 확인해 주세요"); }
+  request("start", {eng});
+  toast(eng === "claude" ? "게임을 시작해요 (Claude AI 채점)" : "게임을 시작해요");
+}
 async function testAI(){
   S.aiTesting = true; render();
   try{
-    const r = await aiScore("나무", "소나무", false, S.H?.settings.ai || "default");
-    S.aiOk = true; S.aiTest = r; toast(`AI 연결 완료 · 나무↔소나무 ${fmtS(r.s)}%`);
+    const r = await aiScore("나무", "소나무", false, game()?.settings.ai || "default");
+    S.aiOk = true; S.aiTest = r; toast(`Claude 연결 완료 · 나무↔소나무 ${fmtS(r.s)}%`);
   }catch(e){ S.aiOk = false; S.aiErr = aiErrText(e); toast(S.aiErr); }
   S.aiTesting = false; render();
   return S.aiOk;
@@ -900,15 +914,13 @@ const ACT = {
     navigator.clipboard?.writeText(t).then(() => toast("방 코드를 복사했어요"), () => toast("코드: " + t));
   },
   setting(b){
-    if(!S.isHost) return;
-    const s = S.H.settings, k = b.dataset.k, el = $("#set-" + k); if(!el) return;
-    if(el.type === "checkbox") s[k] = el.checked;
-    else if(k === "ai") s[k] = el.value;
-    else s[k] = Number(el.value);
-    if(k === "chances") Object.values(S.H.players).forEach(p => p.chances = s.chances);
+    const k = b.dataset.k, el = $("#set-" + k); if(!el) return;
+    const v = el.type === "checkbox" ? el.checked : k === "ai" ? el.value : Number(el.value);
     if(k === "ai") S.aiOk = null;
-    commit();
+    request("cfg", {k, v});
   },
+  start: () => pressStart(),
+  again: () => request("again"),
   testAI: () => testAI(),
   pick(b){ S.pickSel = b.dataset.w; S.customOpen = false; render(); },
   custom(){ S.customOpen = !S.customOpen; S.pickSel = null; render(); setTimeout(() => $("#custom")?.focus(), 30); },
@@ -917,20 +929,32 @@ const ACT = {
     if(S.customOpen){ const c = checkWord($("#custom")?.value, {english:false, kind:"히든"}); if(c.err) return toast(c.err); w = c.w; }
     if(!w) return toast("단어를 하나 골라 주세요");
     LS.set(`pick:${G.gid}:${G.round}`, w);
-    pres({sec:{r:G.round, w:obf(w, G.gid)}});
+    pres({pk:`${G.gid}:${G.round}`});
     S.pickSel = null; S.customOpen = false; render();
   },
-  hint(){
-    const G = game(), T = G.turn; if(!T || S.pendingK || T.busy) return;
+  async hint(){
+    const G = game(), T = G.turn; if(!T || S.pendingK || S.scoring) return;
     const c = checkWord($("#hint")?.value, {english:G.settings.english});
     if(c.err) return toast(c.err);
-    const mine = LS.get(`pick:${G.gid}:${G.round}`, "");
-    if(mine && c.w === norm(mine)) return toast("정답 그 자체는 힌트로 쓸 수 없어요");
+    const ans = myWord(G);
+    if(!ans) return toast("이 폰에 내 히든 워드 기록이 없어요. 단어를 고른 폰으로 해 주세요");
+    if(c.w === norm(ans)) return toast("정답 그 자체는 힌트로 쓸 수 없어요");
     if(T.tries.some(t => deobf(t.w, G.gid) === c.w)) return toast("이미 시도한 단어예요");
+    S.scoring = true; S.pendingW = c.w; $("#hint").value = ""; render();
+    const key = `${G.engine}|${norm(ans)}|${c.w}|${G.settings.english ? 1 : 0}`;
+    let r = LSIM[key];
+    if(!r){
+      try{ r = (await scoreLocal(ans, [c.w], G, G.settings.english))[c.w]; if(r && (r.src === "claude" || r.known)){ LSIM[key] = r; saveLSIM(); } }
+      catch(e){ S.scoring = false; S.pendingW = ""; render(); return toast(aiErrText(e)); }
+    }
+    S.scoring = false;
+    const G2 = game(), T2 = G2?.turn;
+    if(!T2 || G2.phase !== "hint" || T2.id !== T.id || T2.stage !== T.stage){ S.pendingW = ""; render(); return; }
     const k = `${T.id}.${T.stage}.${Date.now().toString(36)}`;
-    S.pendingK = k; S.pendingW = c.w;
-    pres({act:{k, w:obf(c.w, G.gid)}});
-    $("#hint").value = ""; render();
+    S.pendingK = k;
+    pres({act:{k, w:obf(c.w, G.gid), r:{ok:r.valid, s: r.valid ? r.s : null, n: obf([explain(r), r.why].filter(Boolean).join(" — ").slice(0, 80), G.gid), e: r.valid ? "" : obf(r.reason || "힌트로 쓸 수 없는 단어", G.gid)}}});
+    if(S.isHost) hostKick();
+    render();
   },
   chance(){ S.chanceOn = !S.chanceOn; render(); },
   guess(){
@@ -965,7 +989,7 @@ document.addEventListener("click", e => {
   const b = e.target.closest("[data-act]");
   if(!b || b.disabled) return;
   const [ns, fn] = b.dataset.act.split(":");
-  if(ns === "host") HOST[fn]?.(b); else ACT[ns]?.(b);
+  ACT[ns]?.(b);
 });
 document.addEventListener("change", e => { const el = e.target.closest("[data-act='setting']"); if(el) ACT.setting(el); });
 document.addEventListener("keydown", e => {
@@ -1027,13 +1051,13 @@ function nowLine(G){
   const submitted = T && S.myPres.gs && S.myPres.gs.k === T.gkey;
   let t = "", mine = false;
   switch(G.phase){
-    case "lobby": t = S.isHost ? "친구들이 다 들어오면 아래 ‘게임 시작’을 눌러 주세요." : "딜러가 게임을 시작할 때까지 기다려 주세요."; break;
-    case "pick": mine = !!me && me.picked !== G.round && !S.myPres.sec; t = mine ? "봉투에서 숨길 단어 하나를 골라 ‘이 단어로 숨기기’를 누르세요." : "다른 사람이 단어를 고르는 중이에요."; break;
+    case "lobby": t = "친구들이 다 들어오면 아무나 ‘게임 시작’을 누르세요. 진행과 채점은 앱이 알아서 해요."; break;
+    case "pick": mine = !!me && me.picked !== G.round && S.myPres.pk !== `${G.gid}:${G.round}`; t = mine ? "봉투에서 숨길 단어 하나를 골라 ‘이 단어로 숨기기’를 누르세요." : "다른 사람이 단어를 고르는 중이에요."; break;
     case "hint": mine = giver; t = giver ? "힌트 단어를 입력해 유사도를 재 보세요. 95% 이상이 나오면 그 단어가 바로 공개돼요." : `${gn} 님이 힌트를 찾는 중이에요. 공개되면 바로 추리 시작!`; break;
     case "guess": mine = !giver && !!me && !submitted; t = giver ? "친구들이 내 단어를 추리하는 중이에요." : submitted ? "제출 완료! 다른 사람을 기다리는 중이에요." : "공개된 힌트를 보고 정답이라고 생각하는 단어를 적어 내세요."; break;
     case "judging": t = "답안을 채점하는 중이에요."; break;
     case "result": t = "결과를 확인하세요. 잠시 후 자동으로 넘어가요."; break;
-    case "roundEnd": t = S.isHost ? "점수를 확인하고 다음 라운드를 열어 주세요." : "딜러가 다음 라운드를 열 때까지 기다려 주세요."; break;
+    case "roundEnd": t = "라운드 끝! 잠시 후 다음 라운드가 자동으로 시작돼요."; break;
     case "final": t = "게임 끝! 최종 순위예요."; break;
   }
   return t ? `<div class="now ${mine ? "mine" : ""}" role="status"><span class="lb">${mine ? "내 차례" : "지금"}</span><span>${t}</span></div>` : "";
@@ -1072,7 +1096,7 @@ function viewHome(){
   <div class="stack">
     <div class="card stack">
       <div class="field"><label for="nick">닉네임</label><input class="in" id="nick" maxlength="10" placeholder="예: 동동" value="${esc(S.nick)}" autocomplete="nickname"></div>
-      <button class="btn" data-act="create">방 만들기 (내가 딜러)</button>
+      <button class="btn" data-act="create">방 만들기</button>
       <div class="field"><label for="code">친구 방에 들어가기</label>
         <div class="combo"><input class="in code" id="code" maxlength="4" placeholder="ABCD" inputmode="text" autocapitalize="characters" data-enter="join"><button class="btn soft" data-act="join">입장</button></div></div>
       ${S.canWrite === false ? `<p class="fine">이 계정은 보기 전용이라 방은 못 만들지만, 친구 방에는 들어갈 수 있어요.</p>` : ""}
@@ -1080,8 +1104,8 @@ function viewHome(){
     <div class="card stack">
       <p class="eyebrow">처음이라면</p>
       <ol class="steps">
-        <li><span>한 명이 <b>방 만들기</b> → 그 사람이 딜러(진행·채점 담당)가 돼요.</span></li>
-        <li><span>${S.standalone ? "딜러가 이 페이지 링크를 친구에게 보내고, 친구는 <b>방 코드</b>로 입장해요. 계정은 필요 없어요." : "딜러가 공유 메뉴로 친구를 초대하고, 친구는 <b>방 코드</b>로 입장해요."}</span></li>
+        <li><span>아무나 <b>방 만들기</b>를 눌러요. 진행자는 없고 모두 똑같은 참가자예요.</span></li>
+        <li><span>${S.standalone ? "이 페이지 링크를 친구에게 보내고, 친구는 <b>방 코드</b>로 입장해요. 계정은 필요 없어요." : "공유 메뉴로 친구를 초대하고, 친구는 <b>방 코드</b>로 입장해요."}</span></li>
         <li><span>봉투에서 단어를 숨기고, 서로의 단어를 유사도 힌트로 맞혀요.</span></li>
       </ol>
     </div>
@@ -1112,7 +1136,7 @@ function rulesBlock(open){
 }
 
 function viewLobby(G){
-  const on = onlineSet(), s = G.settings, H = S.isHost;
+  const on = onlineSet(), s = G.settings, H = true;
   const ps = Object.entries(G.players);
   const sel = (k, opts) => `<select class="in" id="set-${k}" data-act="setting" data-k="${k}">${opts.map(([v, l]) => `<option value="${v}" ${String(s[k]) === String(v) ? "selected" : ""}>${l}</option>`).join("")}</select>`;
   return `<div class="card stack center">
@@ -1127,15 +1151,15 @@ function viewLobby(G){
       <li><span>친구는 링크를 열고 닉네임을 적은 뒤 방 코드 <b class="num">${esc(G.code)}</b>로 입장해요. 계정·설치 필요 없어요.</span></li>
     </ol>
     <button class="btn soft" data-act="copyLink">게임 링크 복사</button>` : `<ol class="steps">
-      <li><span>딜러가 이 페이지의 <b>공유(Share)</b> 메뉴에서 친구 이메일을 초대해요.</span></li>
+      <li><span>방을 만든 사람이 이 페이지의 <b>공유(Share)</b> 메뉴에서 친구 이메일을 초대해요.</span></li>
       <li><span>친구는 휴대폰 <b>사파리·크롬</b>에서 claude.ai에 로그인하고 받은 링크를 열어요.</span></li>
       <li><span>닉네임을 적고 방 코드 <b class="num">${esc(G.code)}</b>로 입장하면 끝!</span></li>
     </ol>`}
   </div>
   <div class="card stack">
     <div class="row"><p class="eyebrow">참가자 ${ps.filter(([u]) => on.has(u)).length}명</p></div>
-    <div class="plist">${ps.map(([u, p]) => `<div class="pl"><span class="dot ${on.has(u) ? "" : "off"}"></span><span class="nm">${esc(p.nick)}${u === G.hostUid ? ` <span class="tag">딜러</span>` : ""}${u === S.uid ? ` <span class="tag">나</span>` : ""}</span>${H && u !== S.uid ? `<button class="btn ghost sm" data-act="host:kick" data-u="${esc(u)}">내보내기</button>` : ""}</div>`).join("")}</div>
-    ${!G.players[S.uid] ? `<p class="muted small pulse">딜러 화면이 나를 등록하는 중…</p>` : ""}
+    <div class="plist">${ps.map(([u, p]) => `<div class="pl"><span class="dot ${on.has(u) ? "" : "off"}"></span><span class="nm">${esc(p.nick)}${u === S.uid ? ` <span class="tag">나</span>` : ""}</span></div>`).join("")}</div>
+    ${!G.players[S.uid] ? `<p class="muted small pulse">방에 들어가는 중…</p>` : ""}
   </div>
   ${H ? `<div class="card stack">
     <p class="eyebrow">방 설정</p>
@@ -1151,9 +1175,9 @@ function viewLobby(G){
     <label class="chk"><input type="checkbox" id="set-lenient" data-act="setting" data-k="lenient" ${s.lenient ? "checked" : ""}> 정답 판정에 표기 변형·번역 인정</label>
     <div class="row" style="justify-content:space-between"><span class="small ${S.aiOk ? "" : "muted"}">${!S.sample && S.standalone ? "내장 유사도 사전으로 채점해요. 인터넷만 되면 누구나 할 수 있어요." : s.ai === "dict" ? "내장 사전으로 채점해요 (Claude 연결 필요 없음)" : S.aiOk ? `Claude 연결됨 · 나무↔소나무 ${fmtS(S.aiTest?.s)}%` : !S.sample ? (s.ai === "auto" ? "Claude 연결이 안 되는 화면이라 내장 사전으로 채점해요" : "이 화면에선 Claude를 못 써요. 사파리·크롬에서 열거나 ‘자동/내장 사전’을 고르세요") : S.aiOk === false ? (S.aiErr || "Claude 연결 실패") + (s.ai === "auto" ? " · 내장 사전으로 진행돼요" : "") : "시작할 때 Claude를 연결해요. 처음 한 번 ‘허용’을 눌러 주세요"}</span>
     ${s.ai !== "dict" && S.sample ? `<button class="btn ghost sm" data-act="testAI" ${S.aiTesting ? "disabled" : ""}>${S.aiTesting ? "확인 중…" : "Claude 테스트"}</button>` : ""}</div>
-    <button class="btn" data-act="host:start" ${S.aiTesting ? "disabled" : ""}>게임 시작</button>
-    <p class="fine">딜러(방장) 폰이 채점과 진행을 맡아요. 게임 중엔 이 화면을 켜 두세요.${S.sample ? " Claude로 채점하면 사용량은 딜러 계정에서 나갑니다." : ""}</p>
-  </div>` : `<div class="card row"><span class="spin"></span><span class="muted">딜러가 게임을 시작하길 기다리는 중</span></div>`}
+    <button class="btn" data-act="start" ${S.aiTesting ? "disabled" : ""}>게임 시작</button>
+    <p class="fine">설정과 시작은 누구나 할 수 있어요. 진행·채점은 앱이 자동으로 하고, 누가 나가도 남은 폰들이 이어서 진행해요.${S.sample ? " Claude로 채점하면 각자 자기 단어를 채점할 때 자기 계정 사용량이 쓰여요." : ""}</p>
+  </div>` : ""}
   ${rulesBlock(false)}`;
 }
 
@@ -1167,12 +1191,12 @@ function envelope(G){
 function viewPick(G){
   const me = G.players[S.uid], on = onlineSet();
   const doneList = `<div class="plist">${Object.entries(G.players).filter(([u]) => on.has(u) || G.players[u].picked === G.round).map(([u, p]) => `<div class="pl"><span class="nm">${esc(p.nick)}</span><span class="st ${p.picked === G.round ? "ok" : ""}">${p.picked === G.round ? "선택 완료" : "고르는 중"}</span></div>`).join("")}</div>`;
-  if(!me) return `<div class="card"><p class="muted pulse">딜러 화면이 나를 등록하는 중…</p></div>`;
-  if(me.picked === G.round || S.myPres.sec){
+  if(!me) return `<div class="card"><p class="muted pulse">방에 들어가는 중…</p></div>`;
+  if(me.picked === G.round || S.myPres.pk === `${G.gid}:${G.round}`){
     const w = LS.get(`pick:${G.gid}:${G.round}`, "");
     return `<div class="card stack"><p class="eyebrow">${G.round}라운드 히든 워드</p>
       ${secretBox(w)}
-      <p class="muted small">${me.picked === G.round ? "딜러가 안전하게 보관했어요. 다른 사람을 기다리는 중." : "딜러에게 전달하는 중…"}</p></div>
+      <p class="muted small">이 단어는 내 폰에만 저장되고 누구에게도 보내지 않아요. 다른 사람을 기다리는 중.</p></div>
       <div class="card">${doneList}</div>`;
   }
   const env = envelope(G);
@@ -1200,7 +1224,7 @@ function viewHint(G){
   const validN = stageTries.filter(t => t.ok).length;
   if(mine){
     const w = LS.get(`pick:${G.gid}:${G.round}`, "");
-    const waiting = S.pendingK || T.busy;
+    const waiting = S.pendingK || S.scoring;
     const list = T.tries.slice().reverse().map(t => {
       const word = deobf(t.w, G.gid), note = deobf(t.note || "", G.gid), reason = deobf(t.reason || "", G.gid);
       return `<div class="try ${t.ok ? "" : "bad"}"><div class="w">${esc(word)}${t.st !== T.stage ? `<span class="tag">${t.st}차</span>` : ""}${t.ok && t.s >= 95 ? `<span class="tag hot">공개 확정</span>` : ""}</div><div class="s" style="color:${heat(t.ok ? t.s : null)}">${t.ok ? fmtS(t.s) + "%" : "불가"}</div>${t.ok ? meter(t.s) : ""}<div class="note">${esc(t.ok ? note : reason)}</div></div>`;
@@ -1220,7 +1244,7 @@ function viewHint(G){
   return `<div class="card stack">
     <p class="eyebrow">${T.stage}차 힌트 탐색</p>
     <h2 class="title">${nickOf(G, T.giver)} 님이 95% 힌트를 찾는 중</h2>
-    <div class="row"><span class="spin"></span><span class="muted">시도 <b class="num">${validN}</b> / ${s.maxTries}번${T.busy ? " · 채점 중" : ""}</span></div>
+    <div class="row"><span class="spin"></span><span class="muted">시도 <b class="num">${validN}</b> / ${s.maxTries}번</span></div>
     <p class="small muted">아무도 못 맞히면 출제자 +${T.stage * mult}점. 맞히면 맞힌 사람마다 +${mult}점.</p>
   </div>
   ${T.revealed.length ? `<div class="stack"><p class="eyebrow">지금까지 공개된 힌트</p>${revealedTiles(G)}</div>` : ""}
@@ -1255,7 +1279,7 @@ function viewResult(G){
   const T = G.turn, res = T.res || {}, gain = T.gain || {};
   const winners = Object.keys(res).filter(u => res[u].some(x => x.ok));
   let banner;
-  if(T.end === "skipped") banner = `<div class="banner info">딜러가 이 턴을 건너뛰었어요</div>`;
+  if(T.end === "skipped") banner = `<div class="banner info">${esc(T.skipMsg || "이 턴은 넘어가요")}</div>`;
   else if(winners.length) banner = `<div class="banner win">${winners.map(u => nickOf(G, u)).join(", ")} 정답! 각 +${G.round}점</div>`;
   else banner = `<div class="banner lose">아무도 못 맞혔어요 · ${nickOf(G, T.giver)} +${gain[T.giver] || 0}점${T.end ? "" : ` · ${T.stage + 1}차 힌트로`}</div>`;
   const rows = Object.entries(res).map(([u, list]) => `<div class="res"><div class="who"><span>${nickOf(G, u)}</span>${gain[u] ? `<span class="tag ok">+${gain[u]}</span>` : ""}</div>${list.map(x => `<div class="gw"><span class="w">${esc(x.w)} ${x.ok ? `<span class="tag ok">${esc(x.how || "정답")}</span>` : ""}</span><span class="s" style="color:${heat(x.s)}">${x.ok ? "정답" : x.s == null ? "–" : fmtS(x.s) + "%"}</span></div>${!x.ok && x.s != null ? meter(x.s) : ""}${x.note && !x.ok && T.answer ? `<div class="fine">${esc(deobf(x.note, G.gid))}</div>` : ""}`).join("")}</div>`).join("");
@@ -1278,25 +1302,17 @@ function logList(G){
 function viewRoundEnd(G){
   return `<div class="card stack center"><p class="eyebrow">${G.round}라운드 종료</p><h2 class="title">다음 라운드는 모든 점수 ×${G.round + 1}</h2></div>
   ${rankList(G)}${logList(G)}
-  ${S.isHost ? `<button class="btn" data-act="host:nextRound">${G.round + 1}라운드 시작</button>` : `<div class="card row"><span class="spin"></span><span class="muted">딜러가 다음 라운드를 열길 기다리는 중</span></div>`}`;
+  <div class="card row"><span class="spin"></span><span class="muted">잠시 후 ${G.round + 1}라운드가 자동으로 시작돼요</span></div>`;
 }
 function viewFinal(G){
   const top = Object.entries(G.players).sort((a, b) => b[1].score - a[1].score)[0];
   return `<div class="card stack center"><p class="eyebrow">최종 우승</p><p class="big">${top ? esc(top[1].nick) : "-"}</p></div>
   ${rankList(G)}${logList(G)}
-  ${S.isHost ? `<button class="btn" data-act="host:again">같은 멤버로 새 게임</button>` : ""}
+  <button class="btn" data-act="again">같은 멤버로 새 게임</button>
   <button class="btn ghost" data-act="leave">방 나가기</button>`;
 }
 function hostBar(G){
-  if(!S.isHost || !G) return `${G && G.phase !== "final" ? `<button class="btn ghost sm" style="align-self:center" data-act="leave">방 나가기</button>` : ""}`;
-  const b = [];
-  if(G.phase === "pick") b.push(`<button class="btn soft sm" data-act="host:pickNow">고른 사람만으로 시작</button>`);
-  if(G.phase === "hint") b.push(`<button class="btn soft sm" data-act="host:endHintNow">지금 공개</button>`, `<button class="btn soft sm" data-act="host:skipTurn">턴 건너뛰기</button>`);
-  if(G.phase === "guess") b.push(`<button class="btn soft sm" data-act="host:closeGuess">추리 마감</button>`);
-  if(G.phase === "result") b.push(`<button class="btn sm" data-act="host:next">다음으로</button>`);
-  if(!["lobby", "final"].includes(G.phase)) b.push(`<button class="btn ghost sm" data-act="host:finish">게임 끝내기</button>`);
-  if(!b.length) return "";
-  return `<div class="card stack" style="background:var(--bg)"><p class="eyebrow">딜러 도구 · 이 화면을 켜 두세요</p><div class="row">${b.join("")}</div></div>`;
+  return G && G.phase !== "final" ? `<button class="btn ghost sm" style="align-self:center" data-act="leave">방 나가기</button>` : "";
 }
 
 /* ================= 로컬 데모(#demo, claude.ai 밖에서만) ================= */
@@ -1324,7 +1340,7 @@ function installMock(){
     return inp.words.map(w => ({w, same:false, valid:true, reason:"", path:[inp.answer, w], s:[fake(inp.answer, w) / 100], why:"데모"}));
   };
   window.claude = {use: async n => ({db:{doc}, room, user, sample})[n] ?? null};
-  const bots = [["b1", "민지"], ["b2", "준호"]];
+  const bots = [["b1", "민지"], ["b2", "준호"]], botSec = {};
   setInterval(() => {
     const path = Object.keys(store).find(k => /^hw\/[A-Z0-9]{4}$/.test(k)); if(!path) return;
     const G = store[path], T = G.turn;
@@ -1332,13 +1348,19 @@ function installMock(){
       const cur = peers.find(p => p.by === id)?.presence || {};
       if(cur.g !== G.code) setPeer(id, {app:"hw", g:G.code, uid:id, nick});
       const me = G.players[id]; if(!me) continue;
-      if(G.phase === "pick" && me.picked !== G.round && !cur.sec) setPeer(id, {sec:{r:G.round, w:obf(WORDS[hashStr(id + G.round) % WORDS.length], G.gid)}});
-      if(G.phase !== "pick" && cur.sec) setPeer(id, {sec:null});
-      if(G.phase === "hint" && T?.giver === id && !T.busy && (!cur.act || T.seen.includes(cur.act.k)) && Math.random() < .5)
-        setPeer(id, {act:{k:`${T.id}.${T.stage}.${Date.now().toString(36)}`, w:obf(WORDS[Math.floor(Math.random() * WORDS.length)], G.gid)}});
+      const pk = `${G.gid}:${G.round}`;
+      if(G.phase === "pick" && cur.pk !== pk){ botSec[pk + id] = WORDS[hashStr(id + pk) % WORDS.length]; setPeer(id, {pk}); }
+      const sec = botSec[pk + id];
+      if(G.phase === "hint" && T?.giver === id && (!cur.act || T.seen.includes(cur.act.k)) && Math.random() < .5){
+        const w = WORDS[Math.floor(Math.random() * WORDS.length)];
+        setPeer(id, {act:{k:`${T.id}.${T.stage}.${Date.now().toString(36)}`, w:obf(w, G.gid), r:{ok:true, s:fake(sec, w), n:obf("데모 채점", G.gid), e:""}}});
+      }
+      if(G.phase === "judging" && T?.giver === id && T.subs && cur.jd?.k !== T.gkey){
+        const res = {}; for(const [u, arr] of Object.entries(T.subs)) res[u] = arr.map(x => { const w = deobf(x, G.gid); return w === sec ? {ok:true, s:100, how:"정확"} : {ok:false, s:fake(sec, w), how:"", note:obf("데모", G.gid)}; });
+        setPeer(id, {jd:{k:T.gkey, res, a:obf(sec, G.gid), f:false}});
+      }
       if(G.phase === "guess" && T?.giver !== id && !(cur.gs && cur.gs.k === T.gkey) && Math.random() < .5){
-        const priv = Object.entries(store).find(([k]) => k.startsWith(`data/users/${ME}/hw-${G.code}`))?.[1];
-        const ans = priv?.secrets?.[T.giver]?.[G.round];
+        const ans = T.giver === ME ? LS.get(`pick:${G.gid}:${G.round}`, null) : botSec[pk + T.giver];
         const w = Math.random() < .3 && ans ? ans : WORDS[Math.floor(Math.random() * WORDS.length)];
         setPeer(id, {gs:{k:T.gkey, ws:[obf(w, G.gid)], done:true}});
       }
