@@ -454,7 +454,7 @@ async function makeStandalone(){
     try{
       client = await new Promise((res, rej) => {
         const c = window.mqtt.connect(url, {clientId:"hw_" + peerId, reconnectPeriod:2000, connectTimeout:6000, clean:true, keepalive:30});
-        const t = setTimeout(() => { c.end(true); rej(); }, 7000);
+        const t = setTimeout(() => { c.end(true); rej(); }, 6000);
         c.once("connect", () => { clearTimeout(t); res(c); });
       });
       break;
@@ -463,10 +463,10 @@ async function makeStandalone(){
   if(!client) return null;
   const handlers = []; // {filter, fn}
   const match = (f, t) => { const a = f.split("/"), b = t.split("/"); if(a.length !== b.length) return false; return a.every((x, i) => x === "+" || x === b[i]); };
-  client.on("message", (topic, buf) => {
+  client.on("message", (topic, buf, packet) => {
     const txt = buf.toString(); let data = null;
     if(txt) try{ data = JSON.parse(txt); }catch{ return; }
-    handlers.slice().forEach(h => { if(match(h.filter, topic)) h.fn(data, topic); });
+    handlers.slice().forEach(h => { if(match(h.filter, topic)) h.fn(data, topic, !!packet?.retain); });
   });
   const listen = (filter, fn) => { const h = {filter, fn}; handlers.push(h); client.subscribe(filter, {qos:1}); return () => { const i = handlers.indexOf(h); if(i >= 0) handlers.splice(i, 1); if(!handlers.some(x => x.filter === filter)) client.unsubscribe(filter); }; };
   const pub = (topic, obj) => new Promise((res, rej) => client.publish(topic, obj == null ? "" : JSON.stringify(obj), {qos:1, retain:true}, e => e ? rej({code:"unavailable"}) : res()));
@@ -498,24 +498,31 @@ async function makeStandalone(){
   const emit = () => { peers = Object.freeze([...peerMap.values()]); phs.forEach(h => { try{ h({peers}); }catch{} }); };
   const meEntry = () => Object.freeze({peer:peerId, by:uid, isMe:true, sameTab:true, kind:"viewer", guest:false, presence:Object.freeze({...myPres}), updatedAt: last[peerId] || Date.now()});
   const ptopic = c => `${MQ_ROOT}/hwp/${c}/${peerId}`;
-  const sendPres = () => { if(code) pub(ptopic(code), {by:uid, ts:Date.now(), p:myPres}).catch(() => {}); };
+  const sendPres = () => { if(code && client.connected) client.publish(ptopic(code), JSON.stringify({by:uid, ts:Date.now(), p:myPres}), {qos:0, retain:false}); };
   const schedule = () => { clearTimeout(pubT); pubT = setTimeout(sendPres, 80); };
   function setCode(c){
     if(c === code) return;
-    if(code){ pub(ptopic(code), null).catch(() => {}); offP?.(); offP = null; }
+    if(code){ offP?.(); offP = null; }
     [...peerMap.keys()].forEach(k => k !== peerId && peerMap.delete(k));
     code = c || null;
-    if(code) offP = listen(`${MQ_ROOT}/hwp/${code}/+`, (d, topic) => {
-      const pid = topic.split("/").pop(); if(pid === peerId) return;
-      if(!d || Date.now() - (d.ts || 0) > 20000){ if(peerMap.delete(pid)) emit(); return; }
+    if(code) offP = listen(`${MQ_ROOT}/hwp/${code}/+`, (d, topic, retained) => {
+      const pid = topic.split("/").pop(); if(pid === peerId || retained) return;
+      if(!d){ if(peerMap.delete(pid)) emit(); return; }
       const old = peerMap.get(pid), pr = Object.freeze({...(d.p || {})});
       const changed = !old || JSON.stringify(old.presence) !== JSON.stringify(pr);
       peerMap.set(pid, Object.freeze({peer:pid, by: typeof d.by === "string" ? d.by.slice(0, 40) : null, isMe:false, sameTab:false, kind:"viewer", guest:false, presence:pr, updatedAt: changed ? Date.now() : old.updatedAt, seen: Date.now()}));
       if(changed || !old) emit();
     });
   }
-  setInterval(() => { sendPres(); let ch = false; for(const [k, v] of peerMap) if(k !== peerId && Date.now() - v.seen > 16000){ peerMap.delete(k); ch = true; } if(ch) emit(); }, 5000);
-  addEventListener("pagehide", () => { if(code) client.publish(ptopic(code), "", {qos:0, retain:true}); });
+  setInterval(() => { sendPres(); let ch = false; for(const [k, v] of peerMap) if(k !== peerId && Date.now() - v.seen > 12000){ peerMap.delete(k); ch = true; } if(ch) emit(); }, 3000);
+  addEventListener("pagehide", () => { if(code && client.connected) client.publish(ptopic(code), "", {qos:0, retain:false}); });
+  // 휴대폰에서 카톡 등으로 나갔다 돌아오면 바로 다시 연결하고 신호를 보낸다
+  document.addEventListener("visibilitychange", () => {
+    if(document.hidden) return;
+    if(!client.connected) try{ client.reconnect(); }catch{}
+    setTimeout(sendPres, 300); setTimeout(sendPres, 1500);
+  });
+  client.on("connect", () => setTimeout(sendPres, 200));
   const room = {
     async presence(patch){
       myPres = {...myPres, ...patch}; for(const k in patch) if(patch[k] === null) delete myPres[k];
@@ -555,7 +562,16 @@ async function boot(){
   if(S.code && db) joinGame(S.code, true); else render();
   setInterval(tickClock, 250);
   setInterval(() => { maybeTakeOver(); if(S.isHost) hostKick(); giverJudge(); }, 1000);
-  document.addEventListener("visibilitychange", () => { if(!document.hidden && S.isHost) wake(); });
+  document.addEventListener("visibilitychange", () => {
+    if(document.hidden){ S.hiddenAt = Date.now(); return; }
+    const away = S.hiddenAt ? Date.now() - S.hiddenAt : 0; S.hiddenAt = 0;
+    if(S.code && away > 4000){
+      if(S.isHost){ S.isHost = false; S.H = null; }
+      S.hostSeen = Date.now();
+      joinGame(S.code, true);
+    }
+    if(S.isHost) wake();
+  });
 }
 
 /* ================= 방 만들기 / 입장 ================= */
@@ -662,11 +678,11 @@ function onlineSet(){
 /* 엔진 폰이 사라지면 남은 사람 중 한 명(아이디 순 첫 번째)이 이어받는다 */
 function maybeTakeOver(){
   const G = S.G;
-  if(!G || S.isHost || !S.code || !G.players?.[S.uid]) return;
+  if(!G || S.isHost || !S.code || G.phase === "final") return;
   if(onlineSet().has(G.hostUid)){ S.hostSeen = Date.now(); return; }
   if(!S.hostSeen) S.hostSeen = Date.now();
-  if(Date.now() - S.hostSeen < 12000) return;
-  const cand = [...onlineSet()].filter(u => G.players[u]).sort()[0];
+  if(Date.now() - S.hostSeen < 10000) return;
+  const cand = [...onlineSet()].sort()[0];
   if(cand !== S.uid) return;
   S.H = clone(G); S.H.hostUid = S.uid; S.isHost = true;
   resumeHost();
@@ -1044,7 +1060,7 @@ function view(){
   if(!S.code || (!G && !S.loading && !S.loadErr)) return viewHome();
   if(!G) return `${bar(null)}<div class="card stack">${S.loadErr ? `<p>${esc(S.loadErr)}</p><button class="btn soft" data-act="leave">처음 화면으로</button>` : `<div class="row"><span class="spin"></span><span>방에 들어가는 중…</span></div>`}</div>`;
   const body = ({lobby:viewLobby, pick:viewPick, hint:viewHint, guess:viewGuess, judging:viewJudging, result:viewResult, roundEnd:viewRoundEnd, final:viewFinal})[G.phase]?.(G) || "";
-  return `${bar(G)}${G.phase !== "lobby" ? scores(G) : ""}<div class="stack">${nowLine(G)}${!S.room ? `<div class="banner lose small">실시간 연결을 쓸 수 없는 화면이에요. 새로고침해 주세요.</div>` : ""}${body}${hostBar(G)}</div>`;
+  return `${bar(G)}${G.phase !== "lobby" ? scores(G) : ""}<div class="stack">${S.standalone && S.room?.connected && !S.room.connected() ? `<div class="banner lose small">인터넷 연결이 끊겨 다시 연결하는 중이에요…</div>` : ""}${nowLine(G)}${!S.room ? `<div class="banner lose small">실시간 연결을 쓸 수 없는 화면이에요. 새로고침해 주세요.</div>` : ""}${body}${hostBar(G)}</div>`;
 }
 function nowLine(G){
   const T = G.turn, me = G.players?.[S.uid], giver = T?.giver === S.uid, gn = T ? nickOf(G, T.giver) : "";
