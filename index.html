@@ -1,0 +1,1351 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#161331"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="히든 워드"><style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style></head><body><title>히든 워드</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=IBM+Plex+Sans+KR:wght@400;500;700&family=Space+Grotesk:wght@500;700&display=swap">
+<style>
+/* Layout: 한 손 모바일 게임판 — 상단 고정 상태바, 가운데 단계 카드 하나, 유사도는 '온도계'(차가움→뜨거움)로 표현 */
+:root{
+  --bg:#161331; --surface:#211d46; --surface2:#2b2659; --line:#3b3572;
+  --fg:#f6f3ff; --muted:#c3bde6; --dim:#918bbd;
+  --cold:#59a8ff; --warm:#ffb347; --hot:#ff4f61; --ok:#3ddc97;
+  --accent:#ff6a5a;
+  --f-display:"Black Han Sans","IBM Plex Sans KR","Apple SD Gothic Neo",sans-serif;
+  --f-body:"IBM Plex Sans KR","Apple SD Gothic Neo","Noto Sans KR",system-ui,sans-serif;
+  --f-num:"Space Grotesk","IBM Plex Sans KR",ui-monospace,sans-serif;
+  --r:16px;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{background:var(--bg);color:var(--fg)}
+body{font-family:var(--f-body);font-size:17px;line-height:1.6;word-break:keep-all;-webkit-font-smoothing:antialiased;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:0 40px}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--bg)}
+.wrap{max-width:520px;margin:0 auto}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:3px solid var(--warm);outline-offset:2px}
+h1,h2,h3{text-wrap:balance;margin:0}
+.num{font-family:var(--f-num);font-variant-numeric:tabular-nums}
+
+/* top bar */
+.bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);padding:10px 0 8px;display:flex;align-items:center;gap:8px}
+.prog{position:sticky;top:calc(env(safe-area-inset-top,0px) + 50px);z-index:5;height:4px;background:var(--line);border-radius:99px;margin-bottom:14px;overflow:hidden}
+.prog i{display:block;height:100%;width:100%;background:var(--warm);border-radius:99px;transition:width .25s linear}
+.prog i.low{background:var(--hot)}
+.prog.none{background:var(--line)}
+.mark{font-family:var(--f-display);font-size:17px;letter-spacing:.5px;line-height:1;white-space:nowrap}
+.mark b{color:var(--accent);font-weight:400}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;flex:0 0 auto;border-radius:999px;background:var(--surface);border:1px solid var(--line);font-size:13px;color:var(--muted);white-space:nowrap}
+.chip strong{color:var(--fg);font-weight:700}
+.sp{flex:1}
+.timer{font-family:var(--f-num);font-weight:700;font-size:15px;color:var(--fg);padding:5px 11px;border-radius:999px;background:var(--surface2)}
+.timer.low{background:var(--hot);color:#fff}
+
+/* scores strip */
+.scores{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px;margin-bottom:14px;scrollbar-width:none}
+.scores::-webkit-scrollbar{display:none}
+.sc{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:6px 10px;border-radius:12px;background:var(--surface);font-size:13px}
+.sc .n{font-family:var(--f-num);font-weight:700}
+.sc.me{outline:1.5px solid var(--warm)}
+.sc.giver{background:var(--surface2)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--ok);flex:0 0 auto}
+.dot.off{background:var(--dim)}
+
+/* cards */
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:18px}
+.stack{display:flex;flex-direction:column;gap:14px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.eyebrow{font-size:13px;letter-spacing:.12em;color:var(--muted);text-transform:uppercase;font-weight:700}
+.title{font-family:var(--f-display);font-size:28px;line-height:1.15;font-weight:400}
+.big{font-family:var(--f-display);font-size:44px;line-height:1.05;font-weight:400;word-break:keep-all}
+.muted{color:var(--muted)}
+.small{font-size:14.5px}
+.center{text-align:center}
+
+/* controls */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:52px;padding:0 20px;border-radius:14px;border:0;background:var(--accent);color:#1a0d10;font-weight:700;font-size:17px;width:100%}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.ghost{background:transparent;color:var(--fg);border:1.5px solid var(--line)}
+.btn.soft{background:var(--surface2);color:var(--fg)}
+.btn.sm{min-height:40px;font-size:14px;padding:0 14px;width:auto;border-radius:11px}
+.field{display:flex;flex-direction:column;gap:6px}
+.field label{font-size:13px;color:var(--muted);font-weight:500}
+.in{width:100%;min-height:54px;border-radius:14px;border:1.5px solid var(--line);background:var(--bg);padding:0 16px;font-size:19px;outline:none}
+.in:focus{border-color:var(--warm)}
+.in.code{font-family:var(--f-num);letter-spacing:.3em;text-transform:uppercase;text-align:center;font-size:24px;font-weight:700}
+.combo{display:flex;gap:8px}
+.combo .in{flex:1;min-width:0}
+.combo .btn{width:auto;flex:0 0 auto}
+select.in{font-size:16px;appearance:auto}
+
+/* similarity meter */
+.meter{position:relative;height:10px;border-radius:99px;background:var(--bg);overflow:hidden}
+.meter i{position:absolute;inset:0 auto 0 0;border-radius:99px;background:linear-gradient(90deg,var(--cold),var(--warm) 60%,var(--hot))}
+.meter .t95{position:absolute;top:-2px;bottom:-2px;left:95%;width:2px;background:var(--fg);opacity:.6}
+.try{display:grid;grid-template-columns:1fr auto;gap:4px 12px;align-items:baseline;padding:12px 0;border-top:1px solid var(--line)}
+.try:first-child{border-top:0}
+.try .w{font-weight:700;font-size:18px;min-width:0;overflow-wrap:anywhere}
+.try .s{font-family:var(--f-num);font-weight:700;font-size:20px}
+.try .meter,.try .note{grid-column:1/-1}
+.try .note{font-size:13px;color:var(--muted)}
+.try.bad .w{text-decoration:line-through;color:var(--dim)}
+.tag{display:inline-block;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;background:var(--surface2);color:var(--muted);vertical-align:middle;margin-left:6px;letter-spacing:.02em}
+.tag.hot{background:var(--hot);color:#fff}
+.tag.ok{background:var(--ok);color:#06281a}
+
+/* revealed hint tile */
+.hint-tiles{display:grid;gap:10px}
+.tile{border-radius:var(--r);padding:16px 18px;background:var(--surface2);display:flex;align-items:center;justify-content:space-between;gap:12px}
+.tile .w{font-family:var(--f-display);font-size:34px;line-height:1.1;font-weight:400;min-width:0;overflow-wrap:anywhere}
+.tile .s{font-family:var(--f-num);font-size:26px;font-weight:700}
+.tile .lb{font-size:12px;color:var(--muted);font-weight:700;letter-spacing:.06em}
+
+/* envelope */
+.env{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.wc{min-height:72px;border-radius:14px;border:1.5px solid var(--line);background:var(--bg);font-family:var(--f-display);font-size:24px;font-weight:400}
+.wc[aria-pressed="true"]{border-color:var(--warm);background:var(--surface2);box-shadow:0 0 0 3px color-mix(in srgb,var(--warm) 30%,transparent)}
+.wc:last-child:nth-child(odd){grid-column:1/-1}
+
+/* secret */
+.secret{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;border-radius:14px;background:var(--bg);border:1px dashed var(--line)}
+.secret .w{font-family:var(--f-display);font-size:26px;font-weight:400}
+.secret .w.mask{letter-spacing:.2em;color:var(--dim)}
+
+/* list */
+.plist{display:flex;flex-direction:column}
+.pl{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line)}
+.pl:first-child{border-top:0}
+.pl .nm{flex:1;min-width:0;font-weight:500;overflow-wrap:anywhere}
+.pl .st{font-size:13px;color:var(--muted)}
+.pl .st.ok{color:var(--ok);font-weight:700}
+
+.banner{border-radius:var(--r);padding:16px 18px;font-weight:700;font-size:17px}
+.banner.win{background:color-mix(in srgb,var(--ok) 18%,var(--surface));border:1px solid var(--ok)}
+.banner.lose{background:color-mix(in srgb,var(--hot) 16%,var(--surface));border:1px solid var(--hot)}
+.banner.info{background:var(--surface2)}
+
+.res{padding:12px 0;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:6px}
+.res:first-child{border-top:0}
+.res .who{display:flex;justify-content:space-between;gap:8px;font-weight:700}
+.gw{display:flex;align-items:center;gap:10px}
+.gw .w{flex:1;min-width:0;overflow-wrap:anywhere}
+.gw .s{font-family:var(--f-num);font-weight:700}
+
+.pulse{animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.4}}
+.spin{width:18px;height:18px;border-radius:50%;border:2.5px solid var(--line);border-top-color:var(--warm);animation:spin .8s linear infinite;flex:0 0 auto}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.pulse,.spin{animation:none}}
+
+details.rules{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:4px 18px}
+details.rules summary{cursor:pointer;padding:14px 0;font-weight:700;list-style:none;display:flex;justify-content:space-between}
+details.rules summary::after{content:"+";color:var(--muted);font-size:20px;line-height:1}
+details.rules[open] summary::after{content:"−"}
+details.rules ol,details.rules ul{padding-left:20px;margin:0 0 14px;display:flex;flex-direction:column;gap:6px}
+details.rules p{margin:0 0 12px}
+
+.podium{display:flex;flex-direction:column;gap:8px}
+.pd{display:flex;align-items:center;gap:12px;padding:14px 16px;border-radius:14px;background:var(--surface2)}
+.pd .rk{font-family:var(--f-num);font-weight:700;font-size:22px;width:28px}
+.pd .nm{flex:1;min-width:0;font-weight:700;overflow-wrap:anywhere}
+.pd .n{font-family:var(--f-num);font-weight:700;font-size:22px}
+.pd.first{background:linear-gradient(90deg,color-mix(in srgb,var(--warm) 35%,var(--surface2)),var(--surface2))}
+
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(20px + env(safe-area-inset-bottom,0px));z-index:20;background:var(--fg);color:var(--bg);padding:12px 18px;border-radius:12px;font-weight:700;font-size:15px;max-width:calc(100% - 32px);box-shadow:0 8px 30px rgba(0,0,0,.4)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.set{display:flex;flex-direction:column;gap:4px}
+.set label{font-size:12px;color:var(--muted)}
+.chk{display:flex;align-items:center;gap:10px;font-size:15px;padding:6px 0}
+.chk input{width:22px;height:22px;accent-color:var(--warm)}
+.hero{padding:26px 0 8px}
+.hero .big span{color:var(--accent)}
+.now{display:flex;gap:10px;align-items:flex-start;padding:14px 16px;border-radius:14px;background:var(--surface2);font-size:16px;font-weight:500;line-height:1.45}
+.now .lb{flex:0 0 auto;font-size:12px;font-weight:700;padding:3px 8px;border-radius:7px;background:var(--line);color:var(--fg);margin-top:1px}
+.now.mine{background:color-mix(in srgb,var(--accent) 22%,var(--surface));border:1.5px solid var(--accent)}
+.now.mine .lb{background:var(--accent);color:#1a0d10}
+.stages{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.stg{padding:8px 6px;border-radius:10px;background:var(--bg);text-align:center;font-size:13px;color:var(--dim);border:1px solid var(--line)}
+.stg b{display:block;font-family:var(--f-num);font-size:16px;color:var(--muted)}
+.stg.on{border-color:var(--warm);color:var(--fg);background:var(--surface2)}
+.stg.on b{color:var(--warm)}
+.stg.past{opacity:.55}
+.steps{display:grid;gap:10px;counter-reset:st}
+.steps li{list-style:none;display:flex;gap:12px;align-items:flex-start}
+.steps li::before{counter-increment:st;content:counter(st);flex:0 0 26px;height:26px;border-radius:50%;background:var(--surface2);display:grid;place-items:center;font-family:var(--f-num);font-weight:700;font-size:14px;color:var(--warm)}
+.steps{padding:0;margin:0}
+.fine{font-size:13px;color:var(--dim)}
+.log{display:flex;flex-direction:column;gap:8px}
+.lg{padding:12px 14px;border-radius:12px;background:var(--bg);font-size:14px}
+.lg b{font-family:var(--f-display);font-weight:400;font-size:18px}
+</style>
+
+<div class="wrap" id="root"></div>
+<div class="toast" id="toast" hidden></div>
+
+<script>
+"use strict";
+/* ================= 기본 도구 ================= */
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const LS = {
+  get(k, d){ try{ const v = localStorage.getItem("hw:"+k); return v == null ? d : JSON.parse(v); }catch{ return d; } },
+  set(k, v){ try{ localStorage.setItem("hw:"+k, JSON.stringify(v)); }catch{} },
+};
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const clone = o => JSON.parse(JSON.stringify(o));
+
+/* 정규화: 띄어쓰기·특수문자 제거, 영문 소문자, 한글 NFC */
+const norm = w => String(w || "").normalize("NFC").toLowerCase()
+  .replace(/[\s​-‍﻿]+/g, "").replace(/[^0-9a-zㄱ-ㆎ가-힣]/g, "");
+
+function checkWord(raw, {english=false, kind="힌트"} = {}){
+  const w = norm(raw);
+  if(!w) return {err:`${kind} 단어를 입력해 주세요`};
+  if(/[ㄱ-ㆎ]/.test(w)) return {err:"ㅋ·ㅏ 같은 낱자 말고 완성된 글자로 써 주세요"};
+  if(/[0-9]/.test(w)) return {err:"숫자는 쓸 수 없어요"};
+  if(!english && /[a-z]/.test(w)) return {err:"이 방은 한글 단어만 받아요 (방 설정에서 영어 허용 가능)"};
+  if(/[a-z]/.test(w) && /[가-힣]/.test(w)) return {err:"한글과 영어를 섞지 말아 주세요"};
+  if(w.length > (/[a-z]/.test(w) ? 20 : 10)) return {err:"단어가 너무 길어요"};
+  return {w};
+}
+const cleanNick = n => String(n || "").replace(/[\u0000-\u001f\u007f-\u009f​-‏‪-‮]/g, "").trim().slice(0, 10);
+
+/* 가벼운 가림막(친구끼리 개발자도구로 슬쩍 보는 것 방지용, 보안 아님) */
+function obf(s, key){
+  const k = new TextEncoder().encode("hw" + key), b = new TextEncoder().encode(String(s));
+  let out = ""; b.forEach((x, i) => out += String.fromCharCode(x ^ k[i % k.length])); return btoa(out);
+}
+function deobf(s, key){
+  try{ const k = new TextEncoder().encode("hw" + key); const b = Uint8Array.from(atob(s), c => c.charCodeAt(0));
+    return new TextDecoder().decode(b.map((x, i) => x ^ k[i % k.length])); }catch{ return ""; }
+}
+function hashStr(s){ let h = 2166136261; for(const c of s){ h ^= c.codePointAt(0); h = Math.imul(h, 16777619); } return h >>> 0; }
+function rng(seed){ let a = seed >>> 0; return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function shuffle(arr, r = Math.random){ const a = arr.slice(); for(let i = a.length - 1; i > 0; i--){ const j = Math.floor(r() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+
+/* ================= 단어 봉투 (고유명사 아닌 일반 명사) ================= */
+const WORDS = ("나무 바다 우산 우비 공항 수영 대기 화가 우유 요리사 서점 대화 전복 눈 배 말 밤 차 다리 감 김 벌 비 사과 병 손 발 시계 거울 편지 기차 자전거 냉장고 도서관 병원 학교 운동장 사막 화산 무지개 구름 번개 별 달 태양 지도 나침반 열쇠 자물쇠 의자 침대 베개 이불 커피 라면 김치 떡볶이 치킨 피자 케이크 초콜릿 사탕 아이스크림 수박 딸기 바나나 포도 감자 고구마 당근 양파 마늘 소금 설탕 간장 가위 연필 지우개 공책 칠판 사진 카메라 영화 노래 피아노 기타 춤 축구 야구 농구 스키 텐트 캠핑 등산 낚시 요트 섬 항구 등대 파도 모래 조개 고래 상어 문어 거북이 펭귄 사자 호랑이 코끼리 기린 원숭이 고양이 강아지 토끼 여우 늑대 곰 독수리 비둘기 나비 거미 개미 꽃 장미 해바라기 단풍 눈사람 생일 선물 풍선 결혼 반지 왕관 성 기사 마법사 해적 유령 천사 악마 로봇 우주 외계인 로켓 비행기 잠수함 소방관 경찰 의사 간호사 선생님 학생 군인 농부 어부 가수 배우 기자 변호사 판사 감옥 법원 은행 시장 백화점 편의점 지하철 버스 택시 신호등 엘리베이터 계단 지붕 창문 문 벽 정원 수영장 목욕 샴푸 칫솔 수건 안경 모자 장갑 목도리 신발 양말 가방 지갑 돈 동전 시험 숙제 졸업 여행 여권 호텔 휴가 겨울 여름 봄 가을 새벽 노을 그림자 꿈 거짓말 비밀 약속 사랑 우정 질투 행운 전쟁 평화 역사 미래 시간 기억 컴퓨터 휴대폰 인터넷 게임 이메일 배터리 전기 자석 불꽃 연기 얼음 온천 화장실 쓰레기 청소 빨래 감기 주사 약 피 심장 뼈 머리카락 이빨 웃음 눈물 박수 바람 그네 시소 미끄럼틀 연 팽이 거품 비누 향수 립스틱 화분 씨앗 열매 뿌리 줄기 잎 숲 강 호수 폭포 동굴 절벽 언덕 들판 논 밭 소 돼지 닭 오리 말벌 모기 파리 박쥐 부엉이 앵무새 공룡 화석 보물 지진 태풍 홍수 가뭄 안개 서리 이슬 천둥 북극 남극").split(" ");
+
+const DEFAULTS = {rounds:2, maxTries:10, hintSec:300, guessSec:120, chances:1, english:false, lenient:true, ai:"auto"};
+
+/* ================= 상태 ================= */
+const S = {
+  ready:false, noRuntime:false, demo:false,
+  db:null, room:null, user:null, sample:null,
+  uid:null, canWrite:null,
+  nick: LS.get("nick", ""), code: LS.get("code", ""),
+  G:null,           // 참가자가 보는 게임 상태(스냅샷)
+  H:null,           // 방장의 권위 상태
+  priv:null,        // 방장 전용 비공개(히든 워드 원본)
+  sims:null,        // 방장 전용 유사도 캐시
+  isHost:false, peers:[], offset:0, unsub:null, loading:false,
+  myPres:{}, pendingK:null, pendingW:"", reveal:false,
+  pickSel:null, customOpen:false, chanceOn:false, aiOk:null, aiTesting:false,
+  lab:{busy:false, res:null}, toastT:0,
+};
+const game = () => S.isHost ? S.H : S.G;
+
+function toast(msg){
+  const t = $("#toast"); t.textContent = msg; t.hidden = false;
+  clearTimeout(S.toastT); S.toastT = setTimeout(() => t.hidden = true, 2800);
+}
+function pres(patch){
+  Object.assign(S.myPres, patch);
+  for(const k in patch) if(patch[k] === null) delete S.myPres[k];
+  if(!S.room) return;
+  S.room.presence({app:"hw", uid:S.uid, ...patch}).catch(() => {});
+}
+const nowHost = () => Date.now() + (S.isHost ? 0 : S.offset);
+
+/* ================= AI 유사도 (v2: 뜻 펼치기 + 연상 경로 + 글자 겹침) =================
+   최종 점수 = 의미 점수(연상 경로)와 글자 점수(겹치는 글자) 중 높은 쪽 + 둘 다 높을 때 가산.
+   · 의미 점수: Claude가 정답의 모든 뜻(동음이의어·한자 구성·복합어·번역)에서 후보까지
+     가장 강한 연상 경로를 찾고, 각 고리의 강도 s를 매긴다. 점수 = 100 × Π s × 0.85^(고리수-1)
+     → 고리가 길어질수록 자연스럽게 식는다(유성→유성매직→마법→해리포터).
+   · 글자 점수: 띄어쓰기를 무시하고 글자를 직접 비교한다(같은 글자를 공유하면 가깝다고 보는 서브워드 임베딩 방식).
+     후보가 정답을 품거나(유성매직⊃유성) 정답이 후보를 품으면(유성⊃성) 겹친 비율만큼. 진짜 뜻이 있는 복합어는 의미 점수가 높게 받쳐 준다. */
+const HOP_DECAY = 0.85;
+const roundHalf = x => Math.max(0, Math.min(100, Math.round(Number(x) * 2) / 2));
+const aiOpts = mode => mode === "fast" ? {modelTier:"quick"} : {modelTier:"default", effort:"low"};
+const syl = w => [...w];
+
+function surfaceScore(ans, w){
+  if(!ans || !w) return 0;
+  if(w === ans) return 100;
+  const k = ans.length >= 2 ? 1 : 0.85;                                // 한 글자 정답(배·눈)은 우연히 겹치기 쉬워 약하게
+  if(w.includes(ans)) return k * (60 + 30 * (ans.length / w.length));  // 소나무⊃나무 80, 유성매직⊃유성 75, 배터리⊃배 59.5
+  if(ans.includes(w)) return k * (50 + 30 * (w.length / ans.length));  // 유성⊃성 65, 아이스크림⊃크림 62
+  const a = syl(ans), b = syl(w), pool = a.slice(); let common = 0;
+  for(const c of b){ const i = pool.indexOf(c); if(i >= 0){ common++; pool.splice(i, 1); } }
+  return 60 * (2 * common / (a.length + b.length));                  // 별성↔유성 30
+}
+function pathScore(path, s){
+  if(!Array.isArray(s) || !s.length) return 3;
+  const links = s.slice(0, 4).map(x => Math.max(0, Math.min(1, Number(x) || 0)));
+  const prod = links.reduce((p, x) => p * x, 1) * Math.pow(HOP_DECAY, links.length - 1);
+  return Math.max(0, Math.min(99, prod * 100));
+}
+function combine(sem, surf){
+  const hi = Math.max(sem, surf), lo = Math.min(sem, surf);
+  return roundHalf(Math.min(99, hi + (lo >= 50 ? (lo - 50) * 0.1 : 0)));
+}
+
+function profilePrompt(answer){
+  return `한국어 단어 '${answer}'의 뜻을 빠짐없이 펼쳐라. 단어 추리 게임에서 이 단어와 관련된 힌트를 공정하게 채점하는 기준표로 쓴다.
+- 동음이의어를 모두 나눈다(한자가 다르면 다른 뜻). 한자어면 한자와 각 글자의 뜻을 적는다(예: 流星 = 흐를 류 + 별 성).
+- 이 단어가 들어간 흔한 복합어·고정 표현(예: 유성매직, 유성펜), 다른 언어 대응어(meteor), 대표 연상어를 뜻별로 적는다.
+- 흔하지 않은 뜻은 weight를 낮게(0~1).
+INPUT_JSON: ${JSON.stringify({answer})}
+JSON 객체 하나로만 답한다: {"senses":[{"m":"뜻 설명(15자 이내)","hanja":"流星 또는 빈 문자열","weight":1,"compounds":["..."],"en":["..."],"assoc":["...최대 8개"]}]}`;
+}
+function pathPrompt(answer, profile, words, english){
+  return `당신은 한국어 단어 연상 게임 '히든 워드'의 의미 채점기다. 정답 단어와 후보 단어들이 있다.
+후보마다 정답에서 후보까지 이어지는 가장 강한 '연상 경로'를 찾고 각 고리의 강도를 매긴다.
+
+[정답의 뜻 목록 — 이 목록을 기준으로 고정해서 판단한다]
+${profile ? JSON.stringify(profile) : "(없음: 직접 모든 뜻을 떠올린다)"}
+
+[경로 규칙]
+- 정답의 모든 뜻(동음이의어), 한자 구성 글자(流星의 星=별), 정답이 들어간 흔한 복합어(유성매직), 다른 언어 번역(meteor, star), 상위어·하위어, 부분·전체, 같은 장면에 함께 나오는 말, 말장난처럼 굳어진 연결(매직=마법)을 고리로 쓸 수 있다.
+- 경로는 정답에서 시작해 후보로 끝난다. 중간 단어는 0~3개(고리 1~4개). 고리 강도의 곱이 가장 큰 경로를 고른다. 짧고 강한 경로가 보통 최선이다.
+- 고리 강도 s(0~1): 1.0 같은 말·번역 / 0.95~0.99 동의어, 바로 아래·위 개념, 정답을 품은 복합어, 한자 구성 글자의 뜻 / 0.85~0.94 매우 강한 연상 / 0.70~0.84 분명한 관련 / 0.50~0.69 약한 관련 / 0.5 미만 억지.
+- 글자 모양이 겹치는 것 자체(유성의 '성' 글자)는 다른 장치가 따로 계산한다. 뜻으로 이어질 때만 고리로 쓴다(성=星=별 → 뜻 연결로 OK).
+- 마땅한 연결이 없으면 path는 [정답, 후보], s는 [0.03].
+- same: 후보가 정답과 같은 단어면 true(띄어쓰기 차이, 같은 외래어의 표기 변형 케익↔케이크, 다른 언어로 쓴 같은 말 meteor↔유성, 로마자 yuseong). 유의어(유성↔별똥별), 상위·하위어, 한 글자만 다른 별개 단어(나무↔나비)는 false.
+- valid: 명사(명사형 포함)인가. 동사·형용사 활용형, 구·문장, 뜻 없는 글자열, 욕설은 false. ${english ? "영어 명사도 허용." : "영어 철자는 허용하지 않는다(외래어 한글 표기는 허용)."} same이 true면 valid는 false.
+- why: 경로를 한 줄로 풀이(25자 이내).
+
+[예시] 정답 '유성'
+별똥별 → path [유성,별똥별] s [0.97]
+마법 → path [유성,유성매직,마법] s [0.95,0.85]
+해리포터 → path [유성,유성매직,마법,해리포터] s [0.95,0.85,0.8]
+가수 → path [유성,별,스타,가수] s [0.9,0.85,0.75]
+성 → path [유성,성] s [0.9] (流星의 星)
+[예시] 정답 '나무'
+버섯 → [나무,버섯] [0.82] / 도토리 → [나무,도토리] [0.79] / 삼투압 → [나무,물,삼투압] [0.85,0.6] / 질책 → [나무,질책] [0.03]
+
+INPUT_JSON: ${JSON.stringify({answer, words})}
+후보 순서 그대로 JSON 배열로만 답한다: [{"w":"마법","same":false,"valid":true,"reason":"","path":["유성","유성매직","마법"],"s":[0.95,0.85],"why":"유성매직의 매직=마법"}]`;
+}
+
+async function aiProfile(answer, mode){
+  if(!S.sample) throw {code:"no_ai"};
+  const r = await S.sample.json(profilePrompt(answer), {...aiOpts(mode), cache:{gcTime:86400000}});
+  const senses = Array.isArray(r?.senses) ? r.senses.slice(0, 6).map(x => ({
+    m: String(x?.m || "").slice(0, 30), hanja: String(x?.hanja || "").slice(0, 12), weight: Number(x?.weight) || 0,
+    compounds: (Array.isArray(x?.compounds) ? x.compounds : []).slice(0, 6).map(v => String(v).slice(0, 15)),
+    en: (Array.isArray(x?.en) ? x.en : []).slice(0, 4).map(v => String(v).slice(0, 20)),
+    assoc: (Array.isArray(x?.assoc) ? x.assoc : []).slice(0, 8).map(v => String(v).slice(0, 15)),
+  })) : [];
+  return {senses};
+}
+/* 여러 단어를 한 번에: w → {same, valid, reason, s, sem, surf, path, why} */
+async function aiPaths(answer, profile, words, english, mode){
+  if(!S.sample) throw {code:"no_ai"};
+  const out = {};
+  if(!words.length) return out;
+  const arr = await S.sample.json(pathPrompt(answer, profile, words, english), {...aiOpts(mode), cache:{gcTime:86400000}});
+  if(!Array.isArray(arr)) throw {code:"invalid_json"};
+  words.forEach((w, i) => {
+    const x = arr.find(o => norm(o?.w) === w) || arr[i] || {};
+    const same = !!x.same || w === norm(answer);
+    const path = (Array.isArray(x.path) ? x.path : [answer, w]).slice(0, 5).map(v => String(v).slice(0, 15));
+    const sem = same ? 100 : pathScore(path, x.s);
+    const surf = surfaceScore(norm(answer), w);
+    out[w] = {same, valid: !same && x.valid !== false, reason: same ? "정답과 같은 단어(번역·표기 변형 포함)" : String(x.reason || "").slice(0, 40),
+      s: same ? 100 : combine(sem, surf), sem: roundHalf(sem), surf: roundHalf(surf), path, why: String(x.why || "").slice(0, 50)};
+  });
+  return out;
+}
+async function aiScore(answer, hint, english, mode, profile){
+  const r = (await aiPaths(answer, profile || null, [hint], english, mode))[hint];
+  if(!r) throw {code:"invalid_json"};
+  return r;
+}
+const pathText = r => r?.path?.length > 1 ? r.path.join(" → ") : "";
+const explain = r => [r.known === false ? "사전에 이어지는 뜻 없음" : pathText(r) && `의미 ${fmtS(r.sem)} (${pathText(r)})`, r.surf >= 1 && `글자 ${fmtS(r.surf)}`].filter(Boolean).join(" · ");
+/* ================= 내장 사전 채점 (Claude 없이) =================
+   dict.json: { 정답: {m: 뜻 요약, r: {관련어: 점수}} } — 봉투 단어 전부에 대해 미리 만든 유사도표.
+   ① 정답의 관련어에 바로 있으면 그 점수 ② 힌트도 표제어면 거꾸로 찾기 ②-1 정답과 붙어 복합어가 되는 조각(대기+열) ③ 정답 관련어 중 표제어를 한 번 거쳐 가는 2단계 연상(×0.85)
+   ④ 사전에 없는 단어는 글자 겹침만 반영. 점수 100인 관련어(번역어)는 '같은 단어'로 처리. */
+let DICT = null, dictP = null;
+function loadDict(){
+  if(DICT) return Promise.resolve(DICT);
+  if(!dictP) dictP = fetch("dict.json").then(r => { if(!r.ok) throw 0; return r.json(); })
+    .then(d => { DICT = d; return d; }).catch(() => { dictP = null; throw {code:"no_dict"}; });
+  return dictP;
+}
+const inDict = w => !!DICT?.[norm(w)];
+function dictScore(answer, w){
+  const a = norm(answer), e = DICT?.[a]?.r || {}, he = DICT?.[w]?.r;
+  let sem = null, path = null;
+  const take = (v, p) => { if(v != null && (sem == null || v > sem)){ sem = v; path = p; } };
+  take(e[w], [a, w]);
+  if(he) take(he[a], [a, w]);
+  // 정답과 붙여 복합어가 되는 조각(대기+열=대기열, 눈+사람=눈사람)은 그 복합어 점수에서 조금 식혀서
+  for(const c of [a + w, w + a]) if(e[c] != null && e[c] < 100) take(e[c] * 0.93, [a, c, w]);
+  for(const [m, s1] of Object.entries(e)){
+    if(s1 < 55 || !DICT[m]) continue;
+    const s2 = DICT[m].r[w]; if(s2 != null) take(s1 * s2 / 100 * HOP_DECAY, [a, m, w]);
+  }
+  if(he) for(const [m, s2] of Object.entries(he)){ const s1 = e[m]; if(s1 != null && s1 < 100 && s2 < 100) take(s1 * s2 / 100 * HOP_DECAY, [a, m, w]); }
+  const known = sem != null;
+  const same = w === a || (known && sem >= 100 && path.length === 2);
+  const surf = surfaceScore(a, w);
+  const semV = known ? Math.min(sem, 99) : 4;
+  return {same, valid: !same, reason: same ? "정답과 같은 단어(번역·표기 변형 포함)" : "",
+    s: same ? 100 : combine(semV, surf), sem: roundHalf(semV), surf: roundHalf(surf),
+    path: known ? path : [a, w], why: known ? "" : "사전에 없는 단어라 글자 겹침만 반영", src:"dict", known};
+}
+/* 방장이 쓰는 채점 진입점: Claude 모드면 Claude, 실패하면 사전으로 대신 */
+async function scoreHint(ans, w, giver){
+  const H = S.H;
+  if(H.engine === "claude"){
+    try{ const prof = await ensureProfile(giver, H.round); const r = await aiScore(ans, w, H.settings.english, H.settings.ai, prof); r.src = "claude"; return r; }
+    catch(e){ try{ await loadDict(); }catch{ throw e; } if(!inDict(ans)) throw e; }
+  }
+  await loadDict(); return dictScore(ans, w);
+}
+async function scoreMany(ans, words, giver){
+  const H = S.H; if(!words.length) return {};
+  if(H.engine === "claude"){
+    try{ const prof = await ensureProfile(giver, H.round); return await aiPaths(ans, prof, words, true, H.settings.ai); }
+    catch(e){ try{ await loadDict(); }catch{ throw e; } if(!inDict(ans)) throw e; }
+  }
+  await loadDict(); const out = {}; words.forEach(w => out[w] = dictScore(ans, w)); return out;
+}
+const engineName = G => G?.engine === "dict" ? "내장 사전" : "Claude AI";
+
+function aiErrText(e){
+  const c = e?.code;
+  if(c === "no_ai" || c === "capability_disabled" || c === "capability_removed") return "이 화면(Claude 앱 등)에선 AI 채점을 쓸 수 없어요. 휴대폰 사파리·크롬에서 claude.ai에 로그인해 이 링크를 여세요";
+  if(c === "not_granted") return "AI 사용 허용을 거절해서 막혔어요. 페이지를 새로고침한 뒤 '허용'을 눌러 주세요";
+  if(c === "sampling_disabled") return "이 계정에서는 Claude AI를 쓸 수 없어요. 다른 계정의 기기를 딜러로 해 주세요";
+  if(c === "rate_limited") return "AI 사용량이 잠시 몰렸어요. 조금 뒤 다시 시도해 주세요";
+  if(c === "invalid_json") return "AI 답을 읽지 못했어요. 다시 시도해 주세요";
+  return "AI 연결이 잠시 불안정해요. 다시 시도해 주세요";
+}
+const heat = s => s == null ? "var(--dim)" : s >= 95 ? "var(--hot)" : s >= 70 ? "var(--warm)" : s >= 45 ? "color-mix(in srgb,var(--warm) 55%,var(--cold))" : "var(--cold)";
+const heatWord = s => s >= 95 ? "공개 확정" : s >= 85 ? "아주 뜨거움" : s >= 70 ? "뜨거움" : s >= 50 ? "미지근" : s >= 20 ? "차가움" : "얼음";
+const fmtS = s => s == null ? "–" : (Number.isInteger(s) ? s.toFixed(0) : s.toFixed(1));
+const meter = s => `<div class="meter" role="img" aria-label="유사도 ${fmtS(s)}%"><i style="width:${s == null ? 0 : s}%"></i><span class="t95"></span></div>`;
+
+/* ================= 계정 없이 하는 모드 (claude.ai 밖에서 링크로 열 때) =================
+   실시간 공유는 공개 MQTT 중계 서버로, 방장 비밀 저장은 방장 기기의 localStorage로,
+   채점은 내장 사전으로 한다. 게임 코드는 claude.ai 쪽과 똑같은 db/room/user 모양을 그대로 쓴다. */
+const MQ_BROKERS = ["wss://broker.emqx.io:8084/mqtt", "wss://broker.hivemq.com:8884/mqtt"];
+const MQ_ROOT = "hwgame-k7q2/v1";
+function loadScript(src){
+  return new Promise((res, rej) => { const s = document.createElement("script"); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
+}
+async function makeStandalone(){
+  try{ await loadScript("https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"); }catch{ return null; }
+  const peerId = "p" + Math.random().toString(36).slice(2, 10);
+  let uid = LS.get("anon", null); if(!uid){ uid = "a" + Math.random().toString(36).slice(2, 12); LS.set("anon", uid); }
+  let client = null;
+  for(const url of MQ_BROKERS){
+    try{
+      client = await new Promise((res, rej) => {
+        const c = window.mqtt.connect(url, {clientId:"hw_" + peerId, reconnectPeriod:2000, connectTimeout:6000, clean:true, keepalive:30});
+        const t = setTimeout(() => { c.end(true); rej(); }, 7000);
+        c.once("connect", () => { clearTimeout(t); res(c); });
+      });
+      break;
+    }catch{ client = null; }
+  }
+  if(!client) return null;
+  const handlers = []; // {filter, fn}
+  const match = (f, t) => { const a = f.split("/"), b = t.split("/"); if(a.length !== b.length) return false; return a.every((x, i) => x === "+" || x === b[i]); };
+  client.on("message", (topic, buf) => {
+    const txt = buf.toString(); let data = null;
+    if(txt) try{ data = JSON.parse(txt); }catch{ return; }
+    handlers.slice().forEach(h => { if(match(h.filter, topic)) h.fn(data, topic); });
+  });
+  const listen = (filter, fn) => { const h = {filter, fn}; handlers.push(h); client.subscribe(filter, {qos:1}); return () => { const i = handlers.indexOf(h); if(i >= 0) handlers.splice(i, 1); if(!handlers.some(x => x.filter === filter)) client.unsubscribe(filter); }; };
+  const pub = (topic, obj) => new Promise((res, rej) => client.publish(topic, obj == null ? "" : JSON.stringify(obj), {qos:1, retain:true}, e => e ? rej({code:"unavailable"}) : res()));
+  const mkSnap = (id, d) => ({id, exists: d != null, data: () => d == null ? undefined : clone(d), metadata:{fromCache:false, hasPendingWrites:false}});
+
+  /* db: 공유 문서는 중계 서버의 '보관 메시지', 개인 문서(data/users/...)는 이 기기 저장소 */
+  const db = {doc(path){
+    const id = path.split("/").pop();
+    if(path.startsWith("data/users/")){
+      const k = "doc:" + path;
+      return {path, get: async () => mkSnap(id, LS.get(k, null)), set: async d => LS.set(k, clone(d)), update: async d => LS.set(k, {...LS.get(k, {}), ...d}), delete: async () => LS.set(k, null),
+        onSnapshot(next){ setTimeout(() => next(mkSnap(id, LS.get(k, null))), 0); return () => {}; }};
+    }
+    const topic = `${MQ_ROOT}/${path}`;
+    return {path,
+      set: d => pub(topic, d), update: d => pub(topic, d), delete: () => pub(topic, null),
+      get: () => new Promise(res => { let done = false; const off = listen(topic, d => { if(done) return; done = true; off(); res(mkSnap(id, d)); }); setTimeout(() => { if(!done){ done = true; off(); res(mkSnap(id, null)); } }, 3000); }),
+      onSnapshot(next){
+        let got = false;
+        const off = listen(topic, d => { got = true; next(mkSnap(id, d)); });
+        setTimeout(() => { if(!got) next(mkSnap(id, null)); }, 4500);
+        return off;
+      }};
+  }};
+
+  /* room: 참가자 상태(presence)를 방별 보관 메시지로 올리고 5초마다 살아 있음을 알린다 */
+  let myPres = {}, code = null, offP = null, peers = Object.freeze([]), last = {}, pubT = 0;
+  const peerMap = new Map(), phs = [];
+  const emit = () => { peers = Object.freeze([...peerMap.values()]); phs.forEach(h => { try{ h({peers}); }catch{} }); };
+  const meEntry = () => Object.freeze({peer:peerId, by:uid, isMe:true, sameTab:true, kind:"viewer", guest:false, presence:Object.freeze({...myPres}), updatedAt: last[peerId] || Date.now()});
+  const ptopic = c => `${MQ_ROOT}/hwp/${c}/${peerId}`;
+  const sendPres = () => { if(code) pub(ptopic(code), {by:uid, ts:Date.now(), p:myPres}).catch(() => {}); };
+  const schedule = () => { clearTimeout(pubT); pubT = setTimeout(sendPres, 80); };
+  function setCode(c){
+    if(c === code) return;
+    if(code){ pub(ptopic(code), null).catch(() => {}); offP?.(); offP = null; }
+    [...peerMap.keys()].forEach(k => k !== peerId && peerMap.delete(k));
+    code = c || null;
+    if(code) offP = listen(`${MQ_ROOT}/hwp/${code}/+`, (d, topic) => {
+      const pid = topic.split("/").pop(); if(pid === peerId) return;
+      if(!d || Date.now() - (d.ts || 0) > 20000){ if(peerMap.delete(pid)) emit(); return; }
+      const old = peerMap.get(pid), pr = Object.freeze({...(d.p || {})});
+      const changed = !old || JSON.stringify(old.presence) !== JSON.stringify(pr);
+      peerMap.set(pid, Object.freeze({peer:pid, by: typeof d.by === "string" ? d.by.slice(0, 40) : null, isMe:false, sameTab:false, kind:"viewer", guest:false, presence:pr, updatedAt: changed ? Date.now() : old.updatedAt, seen: Date.now()}));
+      if(changed || !old) emit();
+    });
+  }
+  setInterval(() => { sendPres(); let ch = false; for(const [k, v] of peerMap) if(k !== peerId && Date.now() - v.seen > 16000){ peerMap.delete(k); ch = true; } if(ch) emit(); }, 5000);
+  addEventListener("pagehide", () => { if(code) client.publish(ptopic(code), "", {qos:0, retain:true}); });
+  const room = {
+    async presence(patch){
+      myPres = {...myPres, ...patch}; for(const k in patch) if(patch[k] === null) delete myPres[k];
+      last[peerId] = Date.now();
+      if("g" in patch) setCode(myPres.g || null);
+      peerMap.set(peerId, meEntry()); emit(); schedule();
+    },
+    peers: () => peers,
+    onPeers(h){ phs.push(h); setTimeout(() => h({peers}), 0); return () => { const i = phs.indexOf(h); if(i >= 0) phs.splice(i, 1); }; },
+    connected: () => client.connected,
+  };
+  const user = {id: async () => uid, can: async () => true, canEdit: async () => true, isOwner: async () => true};
+  return {db, room, user};
+}
+
+/* ================= 부팅 ================= */
+async function boot(){
+  render();
+  if(!window.claude?.use){
+    if(location.hash === "#demo"){ installMock(); S.demo = true; }
+    else {
+      S.standalone = true; render();
+      const sa = await makeStandalone();
+      if(!sa){ S.noRuntime = true; render(); return; }
+      window.claude = {use: async n => ({db:sa.db, room:sa.room, user:sa.user})[n] ?? null};
+    }
+  }
+  const [db, room, user, sample] = await Promise.all(["db", "room", "user", "sample"].map(n => window.claude.use(n).catch(() => null)));
+  Object.assign(S, {db, room, user, sample});
+  S.uid = (user && await user.id().catch(() => null)) || LS.get("anon", null);
+  if(!S.uid){ S.uid = "a" + Math.random().toString(36).slice(2, 12); LS.set("anon", S.uid); }
+  S.canWrite = user ? await user.can("data.write").catch(() => null) : null;
+  if(room){
+    room.onPeers(() => { S.peers = room.peers(); if(S.isHost) hostKick(); render(); }, () => { S.peers = []; render(); });
+  }
+  S.ready = true;
+  if(S.code && db) joinGame(S.code, true); else render();
+  setInterval(tickClock, 250);
+  setInterval(() => { if(S.isHost) hostKick(); }, 1000);
+  document.addEventListener("visibilitychange", () => { if(!document.hidden && S.isHost) wake(); });
+}
+
+/* ================= 방 만들기 / 입장 ================= */
+const CODECH = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+async function createGame(){
+  const nick = cleanNick($("#nick")?.value || S.nick);
+  if(!nick) return toast("닉네임을 먼저 적어 주세요");
+  S.nick = nick; LS.set("nick", nick);
+  if(!S.db || !S.room) return toast("이 화면에서는 실시간 연결을 쓸 수 없어요");
+  let code = "";
+  for(let i = 0; i < 5; i++){
+    code = Array.from({length:4}, () => CODECH[Math.floor(Math.random() * CODECH.length)]).join("");
+    const ex = await S.db.doc("hw/" + code).get().catch(() => null);
+    if(ex && !ex.exists) break;
+  }
+  const H = {v:1, code, gid: Math.random().toString(36).slice(2, 8), hostUid:S.uid, phase:"lobby", settings:{...DEFAULTS},
+    players:{[S.uid]:{nick, score:0, chances:DEFAULTS.chances, picked:0, joined:Date.now()}},
+    order:[], round:1, turnIdx:0, turn:null, log:[], createdAt:Date.now(), hostNow:Date.now()};
+  try{ await S.db.doc("hw/" + code).set(H); }
+  catch(e){ return toast(e?.code === "invalid_argument" ? "이 계정은 방을 만들 권한이 없어요. 친구가 만든 방 코드로 들어가 주세요" : "방을 만들지 못했어요. 다시 시도해 주세요"); }
+  S.H = H; S.isHost = true; S.priv = {secrets:{}};
+  await loadHostPrivate(code);
+  joinGame(code);
+  wake();
+}
+function joinGame(code, silent){
+  code = String(code || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if(!/^[A-Z0-9]{4}$/.test(code)){ if(!silent) toast("방 코드 4자리를 확인해 주세요"); return; }
+  if(!silent){
+    const nick = cleanNick($("#nick")?.value || S.nick);
+    if(!nick) return toast("닉네임을 먼저 적어 주세요");
+    S.nick = nick; LS.set("nick", nick);
+  }
+  if(!S.nick){ S.code = ""; render(); return; }
+  S.unsub?.(); S.code = code; LS.set("code", code); S.loading = true; S.loadErr = ""; render();
+  const timer = setTimeout(() => { if(S.loading){ S.loading = false; S.loadErr = "방 정보를 아직 못 받았어요. 연결을 확인해 주세요."; render(); } }, 10000);
+  S.unsub = S.db.doc("hw/" + code).onSnapshot(snap => {
+    if(!snap.metadata.fromCache){ clearTimeout(timer); S.loading = false; S.loadErr = ""; }
+    if(!snap.exists){
+      if(!snap.metadata.fromCache){ if(!silent) toast("그 코드의 방을 찾을 수 없어요"); leaveGame(true); }
+      return;
+    }
+    const g = snap.data();
+    if(!snap.metadata.fromCache && !snap.metadata.hasPendingWrites && g.hostNow && g.hostUid !== S.uid) S.offset = g.hostNow - Date.now();
+    S.G = g;
+    if(g.hostUid === S.uid){
+      if(!S.isHost || !S.H){ S.H = clone(g); S.isHost = true; resumeHost(); }
+    } else { S.isHost = false; S.H = null; }
+    onGame();
+    render();
+  }, () => { clearTimeout(timer); S.loading = false; S.loadErr = "방 연결이 끊겼어요. 다시 입장해 주세요."; render(); });
+  pres({g:code, nick:S.nick});
+}
+function leaveGame(quiet){
+  S.unsub?.(); S.unsub = null; S.G = null; S.H = null; S.isHost = false; S.code = ""; LS.set("code", "");
+  pres({g:null, sec:null, act:null, gs:null});
+  S.pendingK = null; render();
+  if(!quiet) toast("방에서 나왔어요");
+}
+
+/* 참가자 쪽 반응: 저장 확인되면 비밀 단어를 presence에서 지운다 */
+function onGame(){
+  const G = game(); if(!G) return;
+  const me = G.players?.[S.uid];
+  if(S.myPres.sec && me && me.picked === G.round) pres({sec:null});
+  if(S.pendingK && G.turn && (G.turn.seen || []).includes(S.pendingK)) { S.pendingK = null; S.pendingW = ""; }
+  if(S.pendingK && (!G.turn || G.phase !== "hint")) { S.pendingK = null; S.pendingW = ""; }
+  if(G.phase !== "guess") S.chanceOn = false;
+}
+
+/* ================= 방장(딜러) 로직 ================= */
+async function loadHostPrivate(code){
+  const pdoc = S.db.doc(`data/users/${S.uid}/hw-${code}`);
+  const sdoc = S.db.doc(`data/users/${S.uid}/hw-sims`);
+  const [p, s] = await Promise.all([pdoc.get().catch(() => null), sdoc.get().catch(() => null)]);
+  S.priv = p?.exists ? clone(p.data()) : (S.priv || {secrets:{}});
+  S.priv.secrets ||= {};
+  S.sims = s?.exists ? clone(s.data()) : {m:{}};
+  S.sims.m ||= {};
+}
+let privChain = Promise.resolve();
+function savePriv(){
+  const body = clone(S.priv), code = S.code;
+  privChain = privChain.then(() => S.db.doc(`data/users/${S.uid}/hw-${code}`).set(body));
+  return privChain;
+}
+let simsTimer = 0;
+function saveSims(){
+  clearTimeout(simsTimer);
+  simsTimer = setTimeout(() => {
+    const keys = Object.keys(S.sims.m);
+    if(keys.length > 1500) keys.slice(0, keys.length - 1500).forEach(k => delete S.sims.m[k]);
+    S.db.doc(`data/users/${S.uid}/hw-sims`).set(clone(S.sims)).catch(() => {});
+  }, 1500);
+}
+let commitChain = Promise.resolve(), commitQueued = false;
+function commit(){
+  render();
+  if(commitQueued) return;
+  commitQueued = true;
+  setTimeout(() => {
+    commitQueued = false;
+    const H = S.H; if(!H) return;
+    H.hostNow = Date.now();
+    const body = clone(H), code = H.code;
+    commitChain = commitChain.then(() => S.db.doc("hw/" + code).set(body)).catch(e => toast("저장 실패: " + (e?.code || "연결")));
+  }, 60);
+}
+async function resumeHost(){
+  await loadHostPrivate(S.H.code);
+  const T = S.H.turn;
+  if(T){ T.busy = false; if(S.H.phase === "judging"){ S.H.phase = "guess"; T.deadline = Date.now(); } }
+  commit(); wake();
+}
+let wakeLock = null;
+async function wake(){ try{ if(!wakeLock && navigator.wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.addEventListener?.("release", () => wakeLock = null); } }catch{} }
+
+function here(){ return (S.peers || []).filter(p => p.presence?.app === "hw" && p.presence?.g === S.code); }
+const uidOf = p => p.by || (typeof p.presence?.uid === "string" ? p.presence.uid.slice(0, 80) : null);
+function presOf(uid){ let best = null; for(const p of here()) if(uidOf(p) === uid && (!best || p.updatedAt > best.updatedAt)) best = p; return best?.presence || null; }
+function onlineSet(){
+  const s = new Set(here().map(uidOf).filter(Boolean));
+  if(S.uid && S.code && S.myPres.g === S.code) s.add(S.uid);
+  return s;
+}
+const secretOf = (uid, r) => S.priv?.secrets?.[uid]?.[r] || null;
+/* 정답 단어의 뜻 목록을 한 번 만들어 두고 그 단어의 모든 채점에 같은 기준으로 쓴다 */
+const profBusy = {};
+function ensureProfile(u, r){
+  const ans = secretOf(u, r); if(!ans || !S.sims) return Promise.resolve(null);
+  const key = norm(ans); S.sims.p ||= {};
+  if(S.sims.p[key]) return Promise.resolve(S.sims.p[key]);
+  if(!profBusy[key]) profBusy[key] = aiProfile(ans, S.H?.settings.ai).then(p => { S.sims.p[key] = p; saveSims(); return p; })
+    .catch(() => null).finally(() => { delete profBusy[key]; });
+  return profBusy[key];
+}
+
+let hostBusy = false;
+async function hostKick(){
+  if(!S.isHost || !S.H || hostBusy) return;
+  hostBusy = true;
+  try{ await hostStep(); }catch(e){ console.error(e); }
+  finally{ hostBusy = false; }
+}
+async function hostStep(){
+  const H = S.H, now = Date.now(); let dirty = false;
+  if(!S.priv || !S.sims) return;
+  H.kicked ||= [];
+  // 1) 참가자 등록·닉네임 갱신
+  for(const p of here()){
+    const u = uidOf(p); if(!u || H.kicked.includes(u)) continue;
+    const nick = cleanNick(p.presence.nick) || "플레이어";
+    if(!H.players[u]){ H.players[u] = {nick, score:0, chances:H.settings.chances, picked:0, joined:now}; dirty = true; }
+    else if(H.players[u].nick !== nick){ H.players[u].nick = nick; dirty = true; }
+  }
+  // 2) 히든 워드 접수 → 방장 비공개 영역에만 저장
+  if(H.phase !== "final"){
+    for(const p of here()){
+      const u = uidOf(p), sec = p.presence.sec;
+      if(!u || !sec || sec.r !== H.round || !H.players[u] || H.players[u].picked === H.round) continue;
+      const w = checkWord(deobf(sec.w, H.gid), {english:true}).w;
+      if(!w) continue;
+      S.priv.secrets[u] = {...(S.priv.secrets[u] || {}), [H.round]: w};
+      try{ await savePriv(); H.players[u].picked = H.round; dirty = true; if(H.engine === "claude") ensureProfile(u, H.round); }catch{}
+    }
+  }
+  const T = H.turn, on = onlineSet();
+  if(H.phase === "pick"){
+    const pend = Object.keys(H.players).filter(u => on.has(u) && H.players[u].picked !== H.round);
+    const ready = Object.keys(H.players).filter(u => H.players[u].picked === H.round);
+    if(pend.length === 0 && ready.length >= 2){ startRoundTurns(); return; }
+  }
+  if(H.phase === "hint" && T){
+    const gp = presOf(T.giver), act = gp?.act;
+    if(act && typeof act.k === "string" && act.k.startsWith(`${T.id}.${T.stage}.`) && !T.seen.includes(act.k) && !T.busy){
+      T.seen.push(act.k); if(T.seen.length > 60) T.seen.shift();
+      const ans = secretOf(T.giver, H.round);
+      const chk = checkWord(deobf(act.w, H.gid), {english:H.settings.english});
+      const used = T.tries.some(t => deobf(t.w, H.gid) === chk.w);
+      if(chk.err || used || !ans){
+        T.tries.push({w: obf(chk.w || "?", H.gid), st:T.stage, ok:false, reason: obf(chk.err || (used ? "이미 시도한 단어" : "정답 정보 없음"), H.gid)});
+        commit(); return;
+      }
+      T.busy = true; commit();
+      const key = `v2|${H.engine}|${norm(ans)}|${chk.w}|${H.settings.english ? 1 : 0}`;
+      let r = S.sims.m[key];
+      if(!r){
+        try{ r = await scoreHint(ans, chk.w, T.giver); if(r.src === "claude" || r.known) { S.sims.m[key] = r; saveSims(); } }
+        catch(e){ T.busy = false; T.aiErr = aiErrText(e); commit(); return; }
+      }
+      T.busy = false; T.aiErr = "";
+      T.tries.push({w: obf(chk.w, H.gid), st:T.stage, ok:r.valid, s: r.valid ? r.s : null, note: obf([explain(r), r.why].filter(Boolean).join(" — "), H.gid), reason: obf(r.valid ? "" : (r.reason || "힌트로 쓸 수 없는 단어"), H.gid)});
+      const validN = T.tries.filter(t => t.st === T.stage && t.ok).length;
+      if(r.valid && r.s >= 95){ endHint(); return; }
+      if(validN >= H.settings.maxTries){ endHint(); return; }
+      commit(); return;
+    }
+    if(now >= T.deadline && !T.busy){ endHint(); return; }
+  }
+  if(H.phase === "guess" && T){
+    const guessers = Object.keys(H.players).filter(u => u !== T.giver && on.has(u));
+    const done = guessers.filter(u => { const g = presOf(u)?.gs; return g && g.k === T.gkey && g.done; });
+    if(now >= T.deadline || (guessers.length > 0 && done.length >= guessers.length)){ await judge(); return; }
+  }
+  if(H.phase === "result" && T && now >= T.deadline){ advance(); return; }
+  if(dirty) commit();
+}
+function startRoundTurns(){
+  const H = S.H;
+  const ready = Object.keys(H.players).filter(u => H.players[u].picked === H.round);
+  H.order = shuffle(ready); H.turnIdx = 0;
+  startTurn();
+}
+function startTurn(){
+  const H = S.H;
+  while(H.turnIdx < H.order.length && !secretOf(H.order[H.turnIdx], H.round)) H.turnIdx++;
+  if(H.turnIdx >= H.order.length){
+    H.turn = null; H.phase = H.round < H.settings.rounds ? "roundEnd" : "final"; commit(); return;
+  }
+  const giver = H.order[H.turnIdx];
+  H.turn = {id:`${H.round}-${H.turnIdx}`, giver, stage:1, tries:[], revealed:[], seen:[], busy:false, deadline: Date.now() + H.settings.hintSec * 1000, dur: H.settings.hintSec * 1000, gkey:"", res:null, gain:null, end:null, answer:null, aiErr:""};
+  H.phase = "hint"; commit();
+}
+function endHint(){
+  const H = S.H, T = H.turn;
+  const valid = T.tries.filter(t => t.st === T.stage && t.ok).sort((a, b) => b.s - a.s);
+  const best = valid[0];
+  T.revealed.push(best ? {w: deobf(best.w, H.gid), s: best.s, st:T.stage, note: best.note || ""} : {w:null, s:null, st:T.stage});
+  T.gkey = `${T.id}.${T.stage}`;
+  T.deadline = Date.now() + H.settings.guessSec * 1000; T.dur = H.settings.guessSec * 1000;
+  H.phase = "guess"; commit();
+}
+async function judge(){
+  const H = S.H, T = H.turn, ans = secretOf(T.giver, H.round), mult = H.round;
+  H.phase = "judging"; commit();
+  const subs = {};
+  for(const u of Object.keys(H.players)){
+    if(u === T.giver) continue;
+    const g = presOf(u)?.gs;
+    if(!g || g.k !== T.gkey || !Array.isArray(g.ws)) continue;
+    const ws = [...new Set(g.ws.slice(0, 2).map(x => checkWord(deobf(x, H.gid), {english:true}).w).filter(Boolean))];
+    const allow = 1 + (H.players[u].chances > 0 ? 1 : 0);
+    const use = ws.slice(0, allow);
+    if(use.length === 2) H.players[u].chances--;
+    if(use.length) subs[u] = use;
+  }
+  const uniq = [...new Set(Object.values(subs).flat())];
+  let ai = {}, aiFail = false;
+  try{ ai = await scoreMany(ans, uniq.filter(w => w !== norm(ans)), T.giver); }catch{ aiFail = true; }
+  const res = {}, winners = [];
+  for(const [u, ws] of Object.entries(subs)){
+    const list = ws.map(w => {
+      if(w === norm(ans)) return {w, ok:true, s:100, how:"정확"};
+      const a = ai[w];
+      const ok = !!(H.settings.lenient && a?.same);
+      return {w, ok, s: a ? a.s : null, how: ok ? "표기·번역 인정" : "", note: a ? obf(explain(a), H.gid) : ""};
+    });
+    res[u] = list; if(list.some(x => x.ok)) winners.push(u);
+  }
+  T.res = res; T.gain = {}; T.aiFail = aiFail;
+  if(winners.length){
+    winners.forEach(u => { H.players[u].score += mult; T.gain[u] = mult; });
+    T.end = "solved";
+  } else {
+    const pts = T.stage * mult;
+    H.players[T.giver].score += pts; T.gain[T.giver] = pts;
+    T.end = T.stage >= 3 ? "escaped" : null;
+  }
+  if(T.end){
+    T.answer = ans;
+    H.log.push({r:H.round, giver:T.giver, answer:ans, hints:T.revealed.map(h => h.w ? `${h.w} ${fmtS(h.s)}%` : "힌트 없음"), winners, end:T.end});
+  }
+  T.deadline = Date.now() + 15000; T.dur = 15000;
+  H.phase = "result"; commit();
+}
+function advance(){
+  const H = S.H, T = H.turn;
+  if(T && !T.end){
+    T.stage++; T.deadline = Date.now() + H.settings.hintSec * 1000; T.dur = H.settings.hintSec * 1000; T.res = null; T.gain = null; T.aiErr = "";
+    H.phase = "hint"; commit(); return;
+  }
+  H.turnIdx++; startTurn();
+}
+/* 방장 버튼 */
+const HOST = {
+  async start(){
+    const H = S.H, on = onlineSet();
+    const n = Object.keys(H.players).filter(u => on.has(u)).length;
+    if(n < 2) return toast("2명 이상 모여야 시작할 수 있어요");
+    const mode = H.settings.ai;
+    let engine = "dict";
+    if(mode !== "dict"){
+      const ok = S.aiOk || (S.sample ? await testAI() : false);
+      if(ok) engine = "claude";
+      else if(mode !== "auto") return toast("Claude에 연결되지 않았어요. AI 채점을 '자동'이나 '내장 사전'으로 바꿔 주세요");
+    }
+    if(engine === "dict"){
+      try{ await loadDict(); }catch{ return toast("내장 사전을 불러오지 못했어요. 인터넷 연결을 확인해 주세요"); }
+      if(mode === "auto") toast("Claude 연결 없이 내장 사전으로 채점해요");
+    }
+    H.engine = engine; H.phase = "pick"; H.round = 1; commit();
+  },
+  pickNow(){
+    const H = S.H; const ready = Object.keys(H.players).filter(u => H.players[u].picked === H.round);
+    if(ready.length < 2) return toast("단어를 고른 사람이 2명 이상이어야 해요");
+    startRoundTurns();
+  },
+  endHintNow(){ const T = S.H.turn; if(T?.busy) return toast("채점이 끝난 뒤 눌러 주세요"); endHint(); },
+  skipTurn(){
+    const H = S.H, T = H.turn; if(!T) return;
+    T.end = "skipped"; T.answer = secretOf(T.giver, H.round); T.res = T.res || {}; T.gain = {};
+    H.log.push({r:H.round, giver:T.giver, answer:T.answer, hints:T.revealed.map(h => h.w ? `${h.w} ${fmtS(h.s)}%` : "힌트 없음"), winners:[], end:"skipped"});
+    T.deadline = Date.now() + 8000; T.dur = 8000; H.phase = "result"; commit();
+  },
+  closeGuess(){ S.H.turn.deadline = Date.now(); hostKick(); },
+  next(){ advance(); },
+  nextRound(){ const H = S.H; H.round++; H.phase = "pick"; H.turn = null; commit(); },
+  finish(){ const H = S.H; H.phase = "final"; H.turn = null; commit(); },
+  async again(){
+    const H = S.H;
+    H.gid = Math.random().toString(36).slice(2, 8);
+    Object.values(H.players).forEach(p => { p.score = 0; p.chances = H.settings.chances; p.picked = 0; });
+    Object.assign(H, {phase:"lobby", round:1, turnIdx:0, order:[], turn:null, log:[]});
+    S.priv = {secrets:{}}; await savePriv().catch(() => {}); commit();
+  },
+  kick(b){ const u = b.dataset.u; const H = S.H; if(u && u !== S.uid && H.phase === "lobby"){ delete H.players[u]; (H.kicked ||= []).push(u); commit(); } },
+};
+async function testAI(){
+  S.aiTesting = true; render();
+  try{
+    const r = await aiScore("나무", "소나무", false, S.H?.settings.ai || "default");
+    S.aiOk = true; S.aiTest = r; toast(`AI 연결 완료 · 나무↔소나무 ${fmtS(r.s)}%`);
+  }catch(e){ S.aiOk = false; S.aiErr = aiErrText(e); toast(S.aiErr); }
+  S.aiTesting = false; render();
+  return S.aiOk;
+}
+
+/* ================= 참가자 동작 ================= */
+const ACT = {
+  create: () => createGame(),
+  join: () => joinGame($("#code")?.value),
+  leave: () => leaveGame(),
+  copyLink(){
+    const t = location.href.split("#")[0];
+    navigator.clipboard?.writeText(t).then(() => toast("게임 링크를 복사했어요. 친구에게 보내 주세요"), () => toast(t));
+  },
+  copy(){
+    const t = S.code;
+    navigator.clipboard?.writeText(t).then(() => toast("방 코드를 복사했어요"), () => toast("코드: " + t));
+  },
+  setting(b){
+    if(!S.isHost) return;
+    const s = S.H.settings, k = b.dataset.k, el = $("#set-" + k); if(!el) return;
+    if(el.type === "checkbox") s[k] = el.checked;
+    else if(k === "ai") s[k] = el.value;
+    else s[k] = Number(el.value);
+    if(k === "chances") Object.values(S.H.players).forEach(p => p.chances = s.chances);
+    if(k === "ai") S.aiOk = null;
+    commit();
+  },
+  testAI: () => testAI(),
+  pick(b){ S.pickSel = b.dataset.w; S.customOpen = false; render(); },
+  custom(){ S.customOpen = !S.customOpen; S.pickSel = null; render(); setTimeout(() => $("#custom")?.focus(), 30); },
+  confirmPick(){
+    const G = game(); let w = S.pickSel;
+    if(S.customOpen){ const c = checkWord($("#custom")?.value, {english:false, kind:"히든"}); if(c.err) return toast(c.err); w = c.w; }
+    if(!w) return toast("단어를 하나 골라 주세요");
+    LS.set(`pick:${G.gid}:${G.round}`, w);
+    pres({sec:{r:G.round, w:obf(w, G.gid)}});
+    S.pickSel = null; S.customOpen = false; render();
+  },
+  hint(){
+    const G = game(), T = G.turn; if(!T || S.pendingK || T.busy) return;
+    const c = checkWord($("#hint")?.value, {english:G.settings.english});
+    if(c.err) return toast(c.err);
+    const mine = LS.get(`pick:${G.gid}:${G.round}`, "");
+    if(mine && c.w === norm(mine)) return toast("정답 그 자체는 힌트로 쓸 수 없어요");
+    if(T.tries.some(t => deobf(t.w, G.gid) === c.w)) return toast("이미 시도한 단어예요");
+    const k = `${T.id}.${T.stage}.${Date.now().toString(36)}`;
+    S.pendingK = k; S.pendingW = c.w;
+    pres({act:{k, w:obf(c.w, G.gid)}});
+    $("#hint").value = ""; render();
+  },
+  chance(){ S.chanceOn = !S.chanceOn; render(); },
+  guess(){
+    const G = game(), T = G.turn; if(!T) return;
+    const a = checkWord($("#g1")?.value, {english:true, kind:"추측"}); if(a.err) return toast(a.err);
+    const ws = [a.w];
+    if(S.chanceOn){ const b = checkWord($("#g2")?.value, {english:true, kind:"추가 추측"}); if(b.err) return toast(b.err); if(b.w !== a.w) ws.push(b.w); }
+    pres({gs:{k:T.gkey, ws:ws.map(w => obf(w, G.gid)), done:true}});
+    LS.set(`gs:${T.gkey}`, ws);
+    render();
+  },
+  reveal(){ S.reveal = !S.reveal; render(); },
+  async lab(){
+    const a = checkWord($("#la")?.value, {english:true, kind:"정답"}), b = checkWord($("#lb")?.value, {english:true});
+    if(a.err) return toast(a.err); if(b.err) return toast(b.err);
+    S.lab = {busy:true, res:null, a:a.w, b:b.w}; render();
+    let r = null;
+    if(S.sample && S.labAI !== false){
+      try{ const prof = await aiProfile(a.w, "default").catch(() => null); r = await aiScore(a.w, b.w, true, "default", prof); r.src = "claude"; }
+      catch(e){ S.labAI = false; toast(aiErrText(e) + " · 내장 사전으로 잴게요"); }
+    }
+    if(!r){
+      try{ await loadDict(); }catch{ S.lab = {busy:false, res:null}; render(); return toast("내장 사전을 불러오지 못했어요"); }
+      if(!inDict(a.w)) { S.lab = {busy:false, res:null}; render(); return toast("내장 사전 모드에선 봉투 단어(예: 나무·배·눈)만 정답으로 쓸 수 있어요"); }
+      r = dictScore(a.w, b.w);
+    }
+    S.lab = {busy:false, res:r, a:a.w, b:b.w};
+    render();
+  },
+};
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-act]");
+  if(!b || b.disabled) return;
+  const [ns, fn] = b.dataset.act.split(":");
+  if(ns === "host") HOST[fn]?.(b); else ACT[ns]?.(b);
+});
+document.addEventListener("change", e => { const el = e.target.closest("[data-act='setting']"); if(el) ACT.setting(el); });
+document.addEventListener("keydown", e => {
+  if(e.key !== "Enter" || e.isComposing) return;
+  const el = e.target.closest("[data-enter]"); if(!el) return;
+  e.preventDefault(); $(`[data-act='${el.dataset.enter}']`)?.click();
+});
+document.addEventListener("input", e => { if(e.target.id === "nick") { S.nick = cleanNick(e.target.value); LS.set("nick", S.nick); } });
+
+/* ================= 화면 ================= */
+function tickClock(){
+  const G = game();
+  document.querySelectorAll("[data-deadline]").forEach(el => {
+    const left = Math.max(0, Number(el.dataset.deadline) - nowHost());
+    const sec = Math.ceil(left / 1000);
+    el.textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+    el.classList.toggle("low", sec <= 15);
+  });
+  document.querySelectorAll("[data-prog]").forEach(el => {
+    const left = Math.max(0, Number(el.dataset.prog) - nowHost()), dur = Number(el.dataset.dur) || 1;
+    el.style.width = `${Math.min(100, left / dur * 100)}%`;
+    el.classList.toggle("low", left <= 15000);
+  });
+}
+let lastHTML = "";
+function render(){
+  const root = $("#root");
+  const act = document.activeElement, fid = act?.id, vals = {};
+  root.querySelectorAll("input[id]").forEach(i => { if(i.type !== "checkbox") vals[i.id] = i.value; });
+  const sel = fid && act.selectionStart != null ? [act.selectionStart, act.selectionEnd] : null;
+  const html = view();
+  if(html === lastHTML) return;
+  lastHTML = html; root.innerHTML = html;
+  const G0 = game(), fk = G0 ? `${G0.phase}|${G0.turn?.id || ""}|${G0.turn?.stage || ""}` : "";
+  let autoFocus = null;
+  if(fk !== S.lastFk){
+    S.lastFk = fk;
+    const el = document.querySelector("#hint:not([disabled])") || document.querySelector("#g1");
+    if(el){ autoFocus = el; try{ navigator.vibrate?.(120); }catch{} }
+  }
+  for(const [id, v] of Object.entries(vals)){ const el = document.getElementById(id); if(el && el.type !== "checkbox" && !el.dataset.fresh) el.value = v; }
+  if(fid){ const el = document.getElementById(fid); if(el){ el.focus({preventScroll:true}); if(sel && el.setSelectionRange) try{ el.setSelectionRange(...sel); }catch{} } }
+  else if(autoFocus) autoFocus.focus({preventScroll:true});
+  tickClock();
+}
+const nickOf = (G, u) => esc(G.players?.[u]?.nick || "플레이어");
+
+function view(){
+  if(S.noRuntime) return viewNoRuntime();
+  if(!S.ready) return `<div class="bar"><div class="mark">HIDDEN <b>WORD</b></div></div><div class="card row"><span class="spin"></span><span>${S.standalone ? "실시간 서버에 연결하는 중…" : "연결하는 중…"}</span></div>`;
+  const G = game();
+  if(!S.code || (!G && !S.loading && !S.loadErr)) return viewHome();
+  if(!G) return `${bar(null)}<div class="card stack">${S.loadErr ? `<p>${esc(S.loadErr)}</p><button class="btn soft" data-act="leave">처음 화면으로</button>` : `<div class="row"><span class="spin"></span><span>방에 들어가는 중…</span></div>`}</div>`;
+  const body = ({lobby:viewLobby, pick:viewPick, hint:viewHint, guess:viewGuess, judging:viewJudging, result:viewResult, roundEnd:viewRoundEnd, final:viewFinal})[G.phase]?.(G) || "";
+  return `${bar(G)}${G.phase !== "lobby" ? scores(G) : ""}<div class="stack">${nowLine(G)}${!S.room ? `<div class="banner lose small">실시간 연결을 쓸 수 없는 화면이에요. 새로고침해 주세요.</div>` : ""}${body}${hostBar(G)}</div>`;
+}
+function nowLine(G){
+  const T = G.turn, me = G.players?.[S.uid], giver = T?.giver === S.uid, gn = T ? nickOf(G, T.giver) : "";
+  const submitted = T && S.myPres.gs && S.myPres.gs.k === T.gkey;
+  let t = "", mine = false;
+  switch(G.phase){
+    case "lobby": t = S.isHost ? "친구들이 다 들어오면 아래 ‘게임 시작’을 눌러 주세요." : "딜러가 게임을 시작할 때까지 기다려 주세요."; break;
+    case "pick": mine = !!me && me.picked !== G.round && !S.myPres.sec; t = mine ? "봉투에서 숨길 단어 하나를 골라 ‘이 단어로 숨기기’를 누르세요." : "다른 사람이 단어를 고르는 중이에요."; break;
+    case "hint": mine = giver; t = giver ? "힌트 단어를 입력해 유사도를 재 보세요. 95% 이상이 나오면 그 단어가 바로 공개돼요." : `${gn} 님이 힌트를 찾는 중이에요. 공개되면 바로 추리 시작!`; break;
+    case "guess": mine = !giver && !!me && !submitted; t = giver ? "친구들이 내 단어를 추리하는 중이에요." : submitted ? "제출 완료! 다른 사람을 기다리는 중이에요." : "공개된 힌트를 보고 정답이라고 생각하는 단어를 적어 내세요."; break;
+    case "judging": t = "답안을 채점하는 중이에요."; break;
+    case "result": t = "결과를 확인하세요. 잠시 후 자동으로 넘어가요."; break;
+    case "roundEnd": t = S.isHost ? "점수를 확인하고 다음 라운드를 열어 주세요." : "딜러가 다음 라운드를 열 때까지 기다려 주세요."; break;
+    case "final": t = "게임 끝! 최종 순위예요."; break;
+  }
+  return t ? `<div class="now ${mine ? "mine" : ""}" role="status"><span class="lb">${mine ? "내 차례" : "지금"}</span><span>${t}</span></div>` : "";
+}
+function stageDots(G){
+  const T = G.turn, mult = G.round;
+  return `<div class="stages" aria-label="힌트 단계">${[1, 2, 3].map(k => `<div class="stg ${k === T.stage ? "on" : k < T.stage ? "past" : ""}">${k}차 힌트<b>출제자 +${k * mult}</b></div>`).join("")}</div>`;
+}
+function bar(G){
+  const T = G?.turn;
+  const dl = G && T && ["hint", "guess", "result"].includes(G.phase) ? `<span class="timer" data-deadline="${T.deadline}">–:–</span>` : "";
+  const phaseName = G ? ({lobby:"대기실", pick:"단어 선택", hint:`${T?.stage || 1}차 힌트`, guess:`${T?.stage || 1}차 추리`, judging:"판정 중", result:"결과", roundEnd:"라운드 종료", final:"최종 결과"})[G.phase] : "";
+  return `<div class="bar"><div class="mark">HIDDEN <b>WORD</b></div>${G ? `<span class="chip">${G.phase !== "lobby" && G.phase !== "final" ? `<strong>${G.round}</strong>/${G.settings.rounds}R` : phaseName}</span>` : ""}<span class="sp"></span>${dl}${G ? `<button class="chip" data-act="copy" aria-label="방 코드 복사"><strong class="num">${esc(G.code)}</strong></button>` : ""}</div>${dl ? `<div class="prog"><i data-prog="${T.deadline}" data-dur="${T.dur || 1}"></i></div>` : `<div class="prog none"></div>`}`;
+}
+function scores(G){
+  const on = onlineSet(), giver = G.turn?.giver;
+  const list = Object.entries(G.players).sort((a, b) => b[1].score - a[1].score);
+  return `<div class="scores" aria-label="점수판">${list.map(([u, p]) => `<div class="sc ${u === S.uid ? "me" : ""} ${u === giver ? "giver" : ""}"><span class="dot ${on.has(u) ? "" : "off"}"></span><span>${esc(p.nick)}${u === giver ? " · 출제" : ""}</span><span class="n">${p.score}</span></div>`).join("")}</div>`;
+}
+
+function viewNoRuntime(){
+  return `<div class="bar"><div class="mark">HIDDEN <b>WORD</b></div></div>
+  <div class="card stack"><h2 class="title">실시간 서버에 연결하지 못했어요</h2>
+  <p class="muted">인터넷 연결을 확인하고 새로고침해 주세요. 회사·학교 와이파이에서 막히면 휴대폰 데이터로 열어 보세요.</p>
+  <button class="btn soft" onclick="location.reload()">새로고침</button></div>`;
+}
+
+function viewHome(){
+  const L = S.lab;
+  return `<div class="bar"><div class="mark">HIDDEN <b>WORD</b></div></div>
+  <div class="hero stack">
+    <p class="eyebrow">AI 유사도 추리 게임</p>
+    <h1 class="big">내 단어는 <span>숨기고</span>,<br>친구 단어는 맞혀라</h1>
+    <p class="muted">AI가 매기는 단어 유사도(%)만 보고 서로의 히든 워드를 추리해요. 95%짜리 힌트를 찾되, 친구들은 못 맞히게.</p>
+  </div>
+  <div class="stack">
+    <div class="card stack">
+      <div class="field"><label for="nick">닉네임</label><input class="in" id="nick" maxlength="10" placeholder="예: 동동" value="${esc(S.nick)}" autocomplete="nickname"></div>
+      <button class="btn" data-act="create">방 만들기 (내가 딜러)</button>
+      <div class="field"><label for="code">친구 방에 들어가기</label>
+        <div class="combo"><input class="in code" id="code" maxlength="4" placeholder="ABCD" inputmode="text" autocapitalize="characters" data-enter="join"><button class="btn soft" data-act="join">입장</button></div></div>
+      ${S.canWrite === false ? `<p class="fine">이 계정은 보기 전용이라 방은 못 만들지만, 친구 방에는 들어갈 수 있어요.</p>` : ""}
+    </div>
+    <div class="card stack">
+      <p class="eyebrow">처음이라면</p>
+      <ol class="steps">
+        <li><span>한 명이 <b>방 만들기</b> → 그 사람이 딜러(진행·채점 담당)가 돼요.</span></li>
+        <li><span>${S.standalone ? "딜러가 이 페이지 링크를 친구에게 보내고, 친구는 <b>방 코드</b>로 입장해요. 계정은 필요 없어요." : "딜러가 공유 메뉴로 친구를 초대하고, 친구는 <b>방 코드</b>로 입장해요."}</span></li>
+        <li><span>봉투에서 단어를 숨기고, 서로의 단어를 유사도 힌트로 맞혀요.</span></li>
+      </ol>
+    </div>
+    ${rulesBlock(false)}
+    <div class="card stack">
+      <div><p class="eyebrow">유사도 실험실</p><p class="muted small">게임 전에 AI 감각을 익혀 보세요. 동음이의어·영어도 판단해요.</p></div>
+      <div class="grid2"><div class="field"><label for="la">정답</label><input class="in" id="la" placeholder="대기" maxlength="20"></div>
+      <div class="field"><label for="lb">힌트</label><input class="in" id="lb" placeholder="열" maxlength="20" data-enter="lab"></div></div>
+      <button class="btn soft" data-act="lab" ${L.busy ? "disabled" : ""}>${L.busy ? `<span class="spin"></span> 계산 중` : "유사도 재기"}</button>
+      ${L.res ? `<div class="try" style="border:0;padding:0"><div class="w">${esc(L.a)} ↔ ${esc(L.b)} ${L.res.same ? `<span class="tag hot">같은 단어</span>` : !L.res.valid ? `<span class="tag">힌트 불가</span>` : `<span class="tag">${heatWord(L.res.s)}</span>`}</div><div class="s" style="color:${heat(L.res.s)}">${fmtS(L.res.s)}%</div>${meter(L.res.s)}<div class="note">${esc(L.res.valid ? [explain(L.res), L.res.why].filter(Boolean).join(" — ") : L.res.reason)}</div></div>` : ""}
+      <p class="fine">${S.sample && S.labAI !== false ? "Claude AI로 잽니다. 안 되면 내장 사전으로 바꿔 재요." : "내장 사전으로 잽니다(정답은 봉투 단어만)."}</p>
+    </div>
+  </div>`;
+}
+function rulesBlock(open){
+  return `<details class="rules" ${open ? "open" : ""}><summary>게임 방법</summary>
+  <ol>
+    <li><b>단어 고르기</b> — 각자 봉투(일반 명사 5개)에서 히든 워드 1개를 몰래 고릅니다. 2라운드엔 남은 단어 중에서.</li>
+    <li><b>힌트 찾기</b> — 출제자는 제한 시간 안에 힌트 단어를 최대 10번 시도합니다. 시도와 유사도는 <b>출제자만</b> 봅니다.</li>
+    <li><b>95%의 벽</b> — 유사도 95% 이상이 나오면 그 단어가 즉시 공개됩니다. 10번 안에 못 넘기면 가장 높았던 단어가 공개돼요.</li>
+    <li><b>추리</b> — 나머지는 공개된 힌트(단어 + %)만 보고 동시에 답을 냅니다. 찬스를 쓰면 한 단어 더.</li>
+    <li><b>점수</b> — 맞힌 사람마다 +1점, 그 턴 끝. 아무도 못 맞히면 출제자가 +1(1차)·+2(2차)·+3(3차)점을 받고 다음 힌트로. 3차까지.</li>
+    <li><b>2라운드는 모든 점수 ×2</b>. 마지막 점수가 가장 높은 사람이 우승.</li>
+  </ol>
+  <p class="small muted"><b>AI 유사도는 이렇게 매겨요</b> · ① 정답의 모든 뜻을 먼저 펼칩니다(유성 = 별똥별 流星 / 기름 성질 油性 → 유성매직). ② 정답에서 힌트까지 가장 강한 연상 경로를 찾고, 고리가 하나 늘 때마다 점수가 식어요(유성 → 유성매직 → 마법 → 해리포터). ③ 글자가 겹치면 따로 점수를 줍니다(유성 ↔ 성, 소나무 ↔ 나무). 셋 중 가장 강한 근거가 최종 %가 돼요. 띄어쓰기는 무시. 정답 그 자체, 번역어(tree↔나무), 표기 변형(케익↔케이크)은 힌트로 못 써요. 유의어(나무↔수목)는 힌트로 쓸 수 있지만 정답으로는 인정되지 않습니다. 영어 힌트는 방 설정에서 켤 수 있어요.</p>
+  <p class="fine">규칙은 데블스 플랜 '히든 워드'를 정리한 공개 자료(나무위키 요약) 기준이며, 방송에서 명확하지 않은 부분(점수 누적 방식 등)은 위처럼 정했습니다. 팬이 만든 비공식 게임입니다.</p>
+  </details>`;
+}
+
+function viewLobby(G){
+  const on = onlineSet(), s = G.settings, H = S.isHost;
+  const ps = Object.entries(G.players);
+  const sel = (k, opts) => `<select class="in" id="set-${k}" data-act="setting" data-k="${k}">${opts.map(([v, l]) => `<option value="${v}" ${String(s[k]) === String(v) ? "selected" : ""}>${l}</option>`).join("")}</select>`;
+  return `<div class="card stack center">
+    <p class="eyebrow">방 코드</p>
+    <button class="big num" style="background:none;border:0;letter-spacing:.18em" data-act="copy">${esc(G.code)}</button>
+    <p class="muted small">탭하면 코드가 복사돼요</p>
+  </div>
+  <div class="card stack">
+    <p class="eyebrow">친구 부르는 법</p>
+    ${S.standalone ? `<ol class="steps">
+      <li><span>아래 버튼으로 <b>게임 링크</b>를 복사해 친구에게 보내요(카톡 등).</span></li>
+      <li><span>친구는 링크를 열고 닉네임을 적은 뒤 방 코드 <b class="num">${esc(G.code)}</b>로 입장해요. 계정·설치 필요 없어요.</span></li>
+    </ol>
+    <button class="btn soft" data-act="copyLink">게임 링크 복사</button>` : `<ol class="steps">
+      <li><span>딜러가 이 페이지의 <b>공유(Share)</b> 메뉴에서 친구 이메일을 초대해요.</span></li>
+      <li><span>친구는 휴대폰 <b>사파리·크롬</b>에서 claude.ai에 로그인하고 받은 링크를 열어요.</span></li>
+      <li><span>닉네임을 적고 방 코드 <b class="num">${esc(G.code)}</b>로 입장하면 끝!</span></li>
+    </ol>`}
+  </div>
+  <div class="card stack">
+    <div class="row"><p class="eyebrow">참가자 ${ps.filter(([u]) => on.has(u)).length}명</p></div>
+    <div class="plist">${ps.map(([u, p]) => `<div class="pl"><span class="dot ${on.has(u) ? "" : "off"}"></span><span class="nm">${esc(p.nick)}${u === G.hostUid ? ` <span class="tag">딜러</span>` : ""}${u === S.uid ? ` <span class="tag">나</span>` : ""}</span>${H && u !== S.uid ? `<button class="btn ghost sm" data-act="host:kick" data-u="${esc(u)}">내보내기</button>` : ""}</div>`).join("")}</div>
+    ${!G.players[S.uid] ? `<p class="muted small pulse">딜러 화면이 나를 등록하는 중…</p>` : ""}
+  </div>
+  ${H ? `<div class="card stack">
+    <p class="eyebrow">방 설정</p>
+    <div class="grid2">
+      <div class="set"><label for="set-rounds">라운드</label>${sel("rounds", [[1, "1라운드"], [2, "2라운드"], [3, "3라운드"]])}</div>
+      <div class="set"><label for="set-maxTries">힌트 시도</label>${sel("maxTries", [[5, "최대 5번"], [7, "최대 7번"], [10, "최대 10번"]])}</div>
+      <div class="set"><label for="set-hintSec">힌트 시간</label>${sel("hintSec", [[120, "2분"], [180, "3분"], [300, "5분"], [600, "10분"], [900, "15분(방송)"]])}</div>
+      <div class="set"><label for="set-guessSec">추리 시간</label>${sel("guessSec", [[60, "1분"], [120, "2분"], [180, "3분"], [300, "5분(방송)"]])}</div>
+      <div class="set"><label for="set-chances">찬스(한 단어 더)</label>${sel("chances", [[0, "없음"], [1, "1개"], [2, "2개"], [3, "3개"]])}</div>
+      <div class="set"><label for="set-ai">AI 채점</label>${S.sample ? sel("ai", [["auto", "자동 (Claude→사전)"], ["claude", "Claude 정밀"], ["fast", "Claude 빠름"], ["dict", "내장 사전만"]]) : `<select class="in" id="set-ai" disabled><option>내장 사전</option></select>`}</div>
+    </div>
+    <label class="chk"><input type="checkbox" id="set-english" data-act="setting" data-k="english" ${s.english ? "checked" : ""}> 영어 힌트 허용</label>
+    <label class="chk"><input type="checkbox" id="set-lenient" data-act="setting" data-k="lenient" ${s.lenient ? "checked" : ""}> 정답 판정에 표기 변형·번역 인정</label>
+    <div class="row" style="justify-content:space-between"><span class="small ${S.aiOk ? "" : "muted"}">${!S.sample && S.standalone ? "내장 유사도 사전으로 채점해요. 인터넷만 되면 누구나 할 수 있어요." : s.ai === "dict" ? "내장 사전으로 채점해요 (Claude 연결 필요 없음)" : S.aiOk ? `Claude 연결됨 · 나무↔소나무 ${fmtS(S.aiTest?.s)}%` : !S.sample ? (s.ai === "auto" ? "Claude 연결이 안 되는 화면이라 내장 사전으로 채점해요" : "이 화면에선 Claude를 못 써요. 사파리·크롬에서 열거나 ‘자동/내장 사전’을 고르세요") : S.aiOk === false ? (S.aiErr || "Claude 연결 실패") + (s.ai === "auto" ? " · 내장 사전으로 진행돼요" : "") : "시작할 때 Claude를 연결해요. 처음 한 번 ‘허용’을 눌러 주세요"}</span>
+    ${s.ai !== "dict" && S.sample ? `<button class="btn ghost sm" data-act="testAI" ${S.aiTesting ? "disabled" : ""}>${S.aiTesting ? "확인 중…" : "Claude 테스트"}</button>` : ""}</div>
+    <button class="btn" data-act="host:start" ${S.aiTesting ? "disabled" : ""}>게임 시작</button>
+    <p class="fine">딜러(방장) 폰이 채점과 진행을 맡아요. 게임 중엔 이 화면을 켜 두세요.${S.sample ? " Claude로 채점하면 사용량은 딜러 계정에서 나갑니다." : ""}</p>
+  </div>` : `<div class="card row"><span class="spin"></span><span class="muted">딜러가 게임을 시작하길 기다리는 중</span></div>`}
+  ${rulesBlock(false)}`;
+}
+
+function envelope(G){
+  const r = rng(hashStr(`${S.uid}|${G.gid}`));
+  const pool = shuffle(WORDS, r).slice(0, 5);
+  const used = [];
+  for(let i = 1; i < G.round; i++){ const w = LS.get(`pick:${G.gid}:${i}`, null); if(w) used.push(w); }
+  return pool.filter(w => !used.includes(w));
+}
+function viewPick(G){
+  const me = G.players[S.uid], on = onlineSet();
+  const doneList = `<div class="plist">${Object.entries(G.players).filter(([u]) => on.has(u) || G.players[u].picked === G.round).map(([u, p]) => `<div class="pl"><span class="nm">${esc(p.nick)}</span><span class="st ${p.picked === G.round ? "ok" : ""}">${p.picked === G.round ? "선택 완료" : "고르는 중"}</span></div>`).join("")}</div>`;
+  if(!me) return `<div class="card"><p class="muted pulse">딜러 화면이 나를 등록하는 중…</p></div>`;
+  if(me.picked === G.round || S.myPres.sec){
+    const w = LS.get(`pick:${G.gid}:${G.round}`, "");
+    return `<div class="card stack"><p class="eyebrow">${G.round}라운드 히든 워드</p>
+      ${secretBox(w)}
+      <p class="muted small">${me.picked === G.round ? "딜러가 안전하게 보관했어요. 다른 사람을 기다리는 중." : "딜러에게 전달하는 중…"}</p></div>
+      <div class="card">${doneList}</div>`;
+  }
+  const env = envelope(G);
+  return `<div class="card stack">
+    <div><p class="eyebrow">${G.round}라운드 · 봉투를 열었어요</p><h2 class="title">숨길 단어를 하나 고르세요</h2>
+    <p class="muted small">친구들이 맞히기 어렵지만, 95% 힌트는 찾을 수 있는 단어가 좋아요. 동음이의어도 무기가 됩니다.</p></div>
+    <div class="env">${env.map(w => `<button class="wc" data-act="pick" data-w="${esc(w)}" aria-pressed="${S.pickSel === w}">${esc(w)}</button>`).join("")}</div>
+    ${G.engine === "claude" ? `<button class="btn ghost sm" style="align-self:flex-start" data-act="custom">${S.customOpen ? "봉투에서 고르기" : "직접 입력하기"}</button>` : `<p class="fine">내장 사전으로 채점하는 방이라 봉투 단어만 쓸 수 있어요.</p>`}
+    ${S.customOpen ? `<input class="in" id="custom" maxlength="10" placeholder="고유명사 말고 일반 명사" data-enter="confirmPick">` : ""}
+    <button class="btn" data-act="confirmPick">이 단어로 숨기기</button>
+  </div>
+  <div class="card">${doneList}</div>`;
+}
+function secretBox(w){
+  return `<div class="secret"><span class="w ${S.reveal ? "" : "mask"}">${S.reveal ? esc(w || "이 기기에 기록 없음") : "● ● ●"}</span><button class="btn ghost sm" data-act="reveal">${S.reveal ? "가리기" : "보기"}</button></div>`;
+}
+function revealedTiles(G, label = true){
+  const R = G.turn?.revealed || [];
+  if(!R.length) return "";
+  return `<div class="hint-tiles">${R.map(h => `<div class="tile"><div style="min-width:0">${label ? `<div class="lb">${h.st}차 공개 힌트</div>` : ""}<div class="w">${h.w ? esc(h.w) : "힌트 없음"}</div>${G.turn?.answer && h.note ? `<div class="fine">${esc(deobf(h.note, G.gid))}</div>` : ""}</div><div class="s" style="color:${heat(h.s)}">${h.s == null ? "" : fmtS(h.s) + "%"}</div></div>`).join("")}</div>`;
+}
+function viewHint(G){
+  const T = G.turn, mine = T.giver === S.uid, s = G.settings, mult = G.round;
+  const stageTries = T.tries.filter(t => t.st === T.stage);
+  const validN = stageTries.filter(t => t.ok).length;
+  if(mine){
+    const w = LS.get(`pick:${G.gid}:${G.round}`, "");
+    const waiting = S.pendingK || T.busy;
+    const list = T.tries.slice().reverse().map(t => {
+      const word = deobf(t.w, G.gid), note = deobf(t.note || "", G.gid), reason = deobf(t.reason || "", G.gid);
+      return `<div class="try ${t.ok ? "" : "bad"}"><div class="w">${esc(word)}${t.st !== T.stage ? `<span class="tag">${t.st}차</span>` : ""}${t.ok && t.s >= 95 ? `<span class="tag hot">공개 확정</span>` : ""}</div><div class="s" style="color:${heat(t.ok ? t.s : null)}">${t.ok ? fmtS(t.s) + "%" : "불가"}</div>${t.ok ? meter(t.s) : ""}<div class="note">${esc(t.ok ? note : reason)}</div></div>`;
+    }).join("");
+    return `<div class="card stack">
+      <div class="row" style="justify-content:space-between"><p class="eyebrow">${T.stage}차 힌트 · 남은 시도</p><span class="chip"><strong class="num">${Math.max(0, s.maxTries - validN)}</strong> / ${s.maxTries}번</span></div>
+      ${secretBox(w)}
+      <div class="combo"><input class="in" id="hint" maxlength="20" placeholder="힌트 단어 입력" autocomplete="off" enterkeyhint="send" data-enter="hint" ${waiting ? "disabled" : ""}><button class="btn" data-act="hint" ${waiting ? "disabled" : ""}>재기</button></div>
+      ${waiting ? `<div class="row small"><span class="spin"></span><span>‘${esc(S.pendingW || "…")}’ 유사도를 재는 중 (${engineName(G)})</span></div>` : ""}
+      <p class="small muted">95% 이상 → 그 단어가 바로 공개. 못 넘기면 가장 높은 단어가 공개돼요. 아무도 못 맞히면 내가 <b>+${T.stage * mult}점</b>.</p>
+      ${T.aiErr ? `<p class="small" style="color:var(--hot)">${esc(T.aiErr)} — 같은 단어를 다시 넣어 주세요</p>` : ""}
+    </div>
+    ${list ? `<div class="card"><p class="eyebrow" style="margin-bottom:4px">내 시도 · 나만 보여요</p>${list}</div>` : ""}
+    ${T.revealed.length ? `<div class="stack"><p class="eyebrow">이미 공개된 힌트</p>${revealedTiles(G)}</div>` : ""}
+    ${stageDots(G)}`;
+  }
+  return `<div class="card stack">
+    <p class="eyebrow">${T.stage}차 힌트 탐색</p>
+    <h2 class="title">${nickOf(G, T.giver)} 님이 95% 힌트를 찾는 중</h2>
+    <div class="row"><span class="spin"></span><span class="muted">시도 <b class="num">${validN}</b> / ${s.maxTries}번${T.busy ? " · 채점 중" : ""}</span></div>
+    <p class="small muted">아무도 못 맞히면 출제자 +${T.stage * mult}점. 맞히면 맞힌 사람마다 +${mult}점.</p>
+  </div>
+  ${T.revealed.length ? `<div class="stack"><p class="eyebrow">지금까지 공개된 힌트</p>${revealedTiles(G)}</div>` : ""}
+  ${stageDots(G)}`;
+}
+function viewGuess(G){
+  const T = G.turn, mine = T.giver === S.uid, me = G.players[S.uid], on = onlineSet();
+  const statusList = `<div class="plist">${Object.entries(G.players).filter(([u]) => u !== T.giver && on.has(u)).map(([u, p]) => { const g = u === S.uid ? S.myPres.gs : presOf(u)?.gs; const d = g && g.k === T.gkey && g.done; return `<div class="pl"><span class="nm">${esc(p.nick)}</span><span class="st ${d ? "ok" : ""}">${d ? "제출" : "생각 중"}</span></div>`; }).join("")}</div>`;
+  const tiles = `<div class="stack"><p class="eyebrow">공개된 힌트</p>${revealedTiles(G)}</div>`;
+  if(mine) return `${tiles}<div class="card stack"><p class="eyebrow">친구들이 추리하는 중</p>${statusList}</div>`;
+  if(!me) return `${tiles}<div class="card"><p class="muted">관전 중이에요. 다음 라운드부터 참가해요.</p></div>`;
+  const g = S.myPres.gs;
+  if(g && g.k === T.gkey && g.done){
+    const ws = LS.get(`gs:${T.gkey}`, []);
+    return `${tiles}<div class="card stack"><p class="eyebrow">제출 완료</p><p class="title">${ws.map(esc).join(" · ")}</p><p class="muted small">모두 제출하거나 시간이 끝나면 채점해요.</p>${statusList}</div>`;
+  }
+  const canChance = me.chances > 0;
+  return `${tiles}
+  <div class="card stack">
+    <div><p class="eyebrow">${nickOf(G, T.giver)} 님의 히든 워드는?</p><p class="small muted">띄어쓰기는 무시해요.${G.settings.lenient ? " 표기 변형·영어 번역도 정답으로 쳐요." : ""}</p></div>
+    <input class="in" id="g1" maxlength="20" placeholder="정답이라고 생각하는 단어" autocomplete="off" enterkeyhint="done" data-enter="guess">
+    ${S.chanceOn ? `<input class="in" id="g2" maxlength="20" placeholder="찬스: 한 단어 더" autocomplete="off" data-enter="guess">` : ""}
+    <div class="row"><button class="btn ghost sm" data-act="chance" ${canChance ? "" : "disabled"}>${S.chanceOn ? "찬스 취소" : `찬스 쓰기 (남은 ${me.chances})`}</button></div>
+    <button class="btn" data-act="guess">제출하기</button>
+  </div>
+  <div class="card">${statusList}</div>`;
+}
+function viewJudging(G){
+  return `${revealedTiles(G)}<div class="card row"><span class="spin"></span><span>답안을 채점하는 중…</span></div>`;
+}
+function viewResult(G){
+  const T = G.turn, res = T.res || {}, gain = T.gain || {};
+  const winners = Object.keys(res).filter(u => res[u].some(x => x.ok));
+  let banner;
+  if(T.end === "skipped") banner = `<div class="banner info">딜러가 이 턴을 건너뛰었어요</div>`;
+  else if(winners.length) banner = `<div class="banner win">${winners.map(u => nickOf(G, u)).join(", ")} 정답! 각 +${G.round}점</div>`;
+  else banner = `<div class="banner lose">아무도 못 맞혔어요 · ${nickOf(G, T.giver)} +${gain[T.giver] || 0}점${T.end ? "" : ` · ${T.stage + 1}차 힌트로`}</div>`;
+  const rows = Object.entries(res).map(([u, list]) => `<div class="res"><div class="who"><span>${nickOf(G, u)}</span>${gain[u] ? `<span class="tag ok">+${gain[u]}</span>` : ""}</div>${list.map(x => `<div class="gw"><span class="w">${esc(x.w)} ${x.ok ? `<span class="tag ok">${esc(x.how || "정답")}</span>` : ""}</span><span class="s" style="color:${heat(x.s)}">${x.ok ? "정답" : x.s == null ? "–" : fmtS(x.s) + "%"}</span></div>${!x.ok && x.s != null ? meter(x.s) : ""}${x.note && !x.ok && T.answer ? `<div class="fine">${esc(deobf(x.note, G.gid))}</div>` : ""}`).join("")}</div>`).join("");
+  return `${banner}
+  ${T.answer ? `<div class="card center stack"><p class="eyebrow">${nickOf(G, T.giver)} 님의 히든 워드</p><p class="big">${esc(T.answer)}</p></div>` : ""}
+  ${revealedTiles(G)}
+  ${rows ? `<div class="card"><p class="eyebrow" style="margin-bottom:4px">답안과 정답 유사도</p>${rows}</div>` : `<div class="card muted">제출된 답이 없어요.</div>`}
+  ${T.aiFail ? `<p class="fine">AI 판정에 실패해 글자가 정확히 같은 답만 인정했어요.</p>` : ""}
+  <p class="fine center">잠시 후 자동으로 넘어가요</p>`;
+}
+function rankList(G){
+  const list = Object.entries(G.players).sort((a, b) => b[1].score - a[1].score);
+  let rank = 0, prev = null;
+  return `<div class="podium">${list.map(([u, p], i) => { if(p.score !== prev){ rank = i + 1; prev = p.score; } return `<div class="pd ${rank === 1 ? "first" : ""}"><span class="rk">${rank}</span><span class="nm">${esc(p.nick)}${u === S.uid ? " (나)" : ""}</span><span class="n">${p.score}</span></div>`; }).join("")}</div>`;
+}
+function logList(G){
+  if(!G.log?.length) return "";
+  return `<div class="card stack"><p class="eyebrow">턴 기록</p><div class="log">${G.log.map(l => `<div class="lg">R${l.r} · ${nickOf(G, l.giver)}의 <b>${esc(l.answer || "?")}</b><br><span class="muted small">힌트: ${l.hints.map(esc).join(" → ")} · ${l.end === "solved" ? `정답자 ${l.winners.map(u => nickOf(G, u)).join(", ")}` : l.end === "skipped" ? "건너뜀" : "아무도 못 맞힘"}</span></div>`).join("")}</div></div>`;
+}
+function viewRoundEnd(G){
+  return `<div class="card stack center"><p class="eyebrow">${G.round}라운드 종료</p><h2 class="title">다음 라운드는 모든 점수 ×${G.round + 1}</h2></div>
+  ${rankList(G)}${logList(G)}
+  ${S.isHost ? `<button class="btn" data-act="host:nextRound">${G.round + 1}라운드 시작</button>` : `<div class="card row"><span class="spin"></span><span class="muted">딜러가 다음 라운드를 열길 기다리는 중</span></div>`}`;
+}
+function viewFinal(G){
+  const top = Object.entries(G.players).sort((a, b) => b[1].score - a[1].score)[0];
+  return `<div class="card stack center"><p class="eyebrow">최종 우승</p><p class="big">${top ? esc(top[1].nick) : "-"}</p></div>
+  ${rankList(G)}${logList(G)}
+  ${S.isHost ? `<button class="btn" data-act="host:again">같은 멤버로 새 게임</button>` : ""}
+  <button class="btn ghost" data-act="leave">방 나가기</button>`;
+}
+function hostBar(G){
+  if(!S.isHost || !G) return `${G && G.phase !== "final" ? `<button class="btn ghost sm" style="align-self:center" data-act="leave">방 나가기</button>` : ""}`;
+  const b = [];
+  if(G.phase === "pick") b.push(`<button class="btn soft sm" data-act="host:pickNow">고른 사람만으로 시작</button>`);
+  if(G.phase === "hint") b.push(`<button class="btn soft sm" data-act="host:endHintNow">지금 공개</button>`, `<button class="btn soft sm" data-act="host:skipTurn">턴 건너뛰기</button>`);
+  if(G.phase === "guess") b.push(`<button class="btn soft sm" data-act="host:closeGuess">추리 마감</button>`);
+  if(G.phase === "result") b.push(`<button class="btn sm" data-act="host:next">다음으로</button>`);
+  if(!["lobby", "final"].includes(G.phase)) b.push(`<button class="btn ghost sm" data-act="host:finish">게임 끝내기</button>`);
+  if(!b.length) return "";
+  return `<div class="card stack" style="background:var(--bg)"><p class="eyebrow">딜러 도구 · 이 화면을 켜 두세요</p><div class="row">${b.join("")}</div></div>`;
+}
+
+/* ================= 로컬 데모(#demo, claude.ai 밖에서만) ================= */
+function installMock(){
+  const store = {}, subs = {};
+  const snap = p => ({id:p.split("/").pop(), exists: p in store, data: () => store[p] && clone(store[p]), metadata:{fromCache:false, hasPendingWrites:false}});
+  const notify = p => setTimeout(() => (subs[p] || []).forEach(f => f(snap(p))), 40);
+  const doc = p => ({path:p, get: async () => snap(p), set: async d => { store[p] = clone(d); notify(p); }, update: async d => { Object.assign(store[p], d); notify(p); }, delete: async () => { delete store[p]; notify(p); },
+    onSnapshot: f => { (subs[p] ||= []).push(f); setTimeout(() => f(snap(p)), 40); return () => { subs[p] = subs[p].filter(x => x !== f); }; }});
+  const ME = "me1"; let peers = []; const hs = [];
+  const setPeer = (id, patch) => {
+    const old = peers.find(p => p.by === id); const pr = {...(old?.presence || {}), ...patch};
+    for(const k in patch) if(patch[k] === null) delete pr[k];
+    const np = Object.freeze({peer:id, by:id, isMe:id === ME, sameTab:id === ME, kind:"viewer", guest:false, presence:Object.freeze(pr), updatedAt:Date.now()});
+    peers = Object.freeze(peers.filter(p => p.by !== id).concat(np)); hs.forEach(h => h({peers}));
+  };
+  const room = {presence: async p => setPeer(ME, p), peers: () => peers, onPeers: h => { hs.push(h); setTimeout(() => h({peers}), 10); return () => {}; }};
+  const user = {id: async () => ME, can: async () => true};
+  const fake = (a, b) => b.includes(a) || a.includes(b) ? 96.5 : (hashStr(a + "|" + b) % 900) / 10;
+  const sample = async () => ({text:""});
+  sample.json = async prompt => {
+    await sleep(500);
+    const inp = JSON.parse(prompt.match(/INPUT_JSON: (.*)$/m)[1]);
+    if(!inp.words) return {senses:[]};
+    return inp.words.map(w => ({w, same:false, valid:true, reason:"", path:[inp.answer, w], s:[fake(inp.answer, w) / 100], why:"데모"}));
+  };
+  window.claude = {use: async n => ({db:{doc}, room, user, sample})[n] ?? null};
+  const bots = [["b1", "민지"], ["b2", "준호"]];
+  setInterval(() => {
+    const path = Object.keys(store).find(k => /^hw\/[A-Z0-9]{4}$/.test(k)); if(!path) return;
+    const G = store[path], T = G.turn;
+    for(const [id, nick] of bots){
+      const cur = peers.find(p => p.by === id)?.presence || {};
+      if(cur.g !== G.code) setPeer(id, {app:"hw", g:G.code, uid:id, nick});
+      const me = G.players[id]; if(!me) continue;
+      if(G.phase === "pick" && me.picked !== G.round && !cur.sec) setPeer(id, {sec:{r:G.round, w:obf(WORDS[hashStr(id + G.round) % WORDS.length], G.gid)}});
+      if(G.phase !== "pick" && cur.sec) setPeer(id, {sec:null});
+      if(G.phase === "hint" && T?.giver === id && !T.busy && (!cur.act || T.seen.includes(cur.act.k)) && Math.random() < .5)
+        setPeer(id, {act:{k:`${T.id}.${T.stage}.${Date.now().toString(36)}`, w:obf(WORDS[Math.floor(Math.random() * WORDS.length)], G.gid)}});
+      if(G.phase === "guess" && T?.giver !== id && !(cur.gs && cur.gs.k === T.gkey) && Math.random() < .5){
+        const priv = Object.entries(store).find(([k]) => k.startsWith(`data/users/${ME}/hw-${G.code}`))?.[1];
+        const ans = priv?.secrets?.[T.giver]?.[G.round];
+        const w = Math.random() < .3 && ans ? ans : WORDS[Math.floor(Math.random() * WORDS.length)];
+        setPeer(id, {gs:{k:T.gkey, ws:[obf(w, G.gid)], done:true}});
+      }
+    }
+  }, 900);
+}
+
+boot();
+</script>
+</body></html>
