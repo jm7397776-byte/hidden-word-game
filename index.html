@@ -440,6 +440,7 @@ const meter = s => `<div class="meter" role="img" aria-label="유사도 ${fmtS(s
 /* ================= 계정 없이 하는 모드 (claude.ai 밖에서 링크로 열 때) =================
    실시간 공유는 공개 MQTT 중계 서버로, 방장 비밀 저장은 방장 기기의 localStorage로,
    채점은 내장 사전으로 한다. 게임 코드는 claude.ai 쪽과 똑같은 db/room/user 모양을 그대로 쓴다. */
+const APP_VER = "4";
 const MQ_BROKERS = ["wss://broker.emqx.io:8084/mqtt", "wss://broker.hivemq.com:8884/mqtt"];
 const MQ_ROOT = "hwgame-k7q2/v1";
 function loadScript(src){
@@ -453,7 +454,8 @@ async function makeStandalone(){
   for(const url of MQ_BROKERS){
     try{
       client = await new Promise((res, rej) => {
-        const c = window.mqtt.connect(url, {clientId:"hw_" + peerId, reconnectPeriod:2000, connectTimeout:6000, clean:true, keepalive:30});
+        const c = window.mqtt.connect(url, {clientId:"hw_" + peerId, reconnectPeriod:1500, connectTimeout:6000, clean:true, keepalive:10});
+        c.__url = url;
         const t = setTimeout(() => { c.end(true); rej(); }, 6000);
         c.once("connect", () => { clearTimeout(t); res(c); });
       });
@@ -468,6 +470,7 @@ async function makeStandalone(){
     if(txt) try{ data = JSON.parse(txt); }catch{ return; }
     handlers.slice().forEach(h => { if(match(h.filter, topic)) h.fn(data, topic, !!packet?.retain); });
   });
+  client.on("connect", () => { [...new Set(handlers.map(h => h.filter))].forEach(f => client.subscribe(f, {qos:1})); });
   const listen = (filter, fn) => { const h = {filter, fn}; handlers.push(h); client.subscribe(filter, {qos:1}); return () => { const i = handlers.indexOf(h); if(i >= 0) handlers.splice(i, 1); if(!handlers.some(x => x.filter === filter)) client.unsubscribe(filter); }; };
   const pub = (topic, obj) => new Promise((res, rej) => client.publish(topic, obj == null ? "" : JSON.stringify(obj), {qos:1, retain:true}, e => e ? rej({code:"unavailable"}) : res()));
   const mkSnap = (id, d) => ({id, exists: d != null, data: () => d == null ? undefined : clone(d), metadata:{fromCache:false, hasPendingWrites:false}});
@@ -517,10 +520,14 @@ async function makeStandalone(){
   setInterval(() => { sendPres(); let ch = false; for(const [k, v] of peerMap) if(k !== peerId && Date.now() - v.seen > 12000){ peerMap.delete(k); ch = true; } if(ch) emit(); }, 3000);
   addEventListener("pagehide", () => { if(code && client.connected) client.publish(ptopic(code), "", {qos:0, retain:false}); });
   // 휴대폰에서 카톡 등으로 나갔다 돌아오면 바로 다시 연결하고 신호를 보낸다
+  let hidAt = 0;
   document.addEventListener("visibilitychange", () => {
-    if(document.hidden) return;
-    if(!client.connected) try{ client.reconnect(); }catch{}
-    setTimeout(sendPres, 300); setTimeout(sendPres, 1500);
+    if(document.hidden){ hidAt = Date.now(); return; }
+    const away = hidAt ? Date.now() - hidAt : 0; hidAt = 0;
+    if(away > 3000 || !client.connected){
+      try{ client.end(true, {}, () => { try{ client.reconnect(); }catch{} }); }catch{ try{ client.reconnect(); }catch{} }
+    }
+    setTimeout(sendPres, 800); setTimeout(sendPres, 2500);
   });
   client.on("connect", () => setTimeout(sendPres, 200));
   const room = {
@@ -533,7 +540,9 @@ async function makeStandalone(){
     peers: () => peers,
     onPeers(h){ phs.push(h); setTimeout(() => h({peers}), 0); return () => { const i = phs.indexOf(h); if(i >= 0) phs.splice(i, 1); }; },
     connected: () => client.connected,
+    info: () => ({server: /emqx/.test(client.__url || client.options?.href || "") ? "EMQX" : "HiveMQ", peers: peerMap.size}),
   };
+  client.__url = client.__url || MQ_BROKERS.find(u => client.options && String(client.options.hostname || "").length && u.includes(client.options.hostname)) || "";
   const user = {id: async () => uid, can: async () => true, canEdit: async () => true, isOwner: async () => true};
   return {db, room, user};
 }
@@ -545,6 +554,10 @@ async function boot(){
     if(location.hash === "#demo"){ installMock(); S.demo = true; }
     else {
       S.standalone = true; render();
+      try{
+        const v = (await (await fetch("version.txt?t=" + Date.now(), {cache:"no-store"})).text()).trim();
+        if(v && v !== APP_VER && sessionStorage.getItem("hw-reload") !== v){ sessionStorage.setItem("hw-reload", v); location.replace(location.pathname + "?v=" + v + location.hash); return; }
+      }catch{}
       const sa = await makeStandalone();
       if(!sa){ S.noRuntime = true; render(); return; }
       window.claude = {use: async n => ({db:sa.db, room:sa.room, user:sa.user})[n] ?? null};
@@ -1328,7 +1341,9 @@ function viewFinal(G){
   <button class="btn ghost" data-act="leave">방 나가기</button>`;
 }
 function hostBar(G){
-  return G && G.phase !== "final" ? `<button class="btn ghost sm" style="align-self:center" data-act="leave">방 나가기</button>` : "";
+  const inf = S.room?.info?.();
+  const diag = S.standalone && inf ? `<p class="fine center">버전 ${APP_VER} · 서버 ${inf.server} · ${S.room.connected() ? "연결됨" : "재연결 중"} · 같은 방 신호 ${here().length}명</p>` : "";
+  return (G && G.phase !== "final" ? `<button class="btn ghost sm" style="align-self:center" data-act="leave">방 나가기</button>` : "") + diag;
 }
 
 /* ================= 로컬 데모(#demo, claude.ai 밖에서만) ================= */
