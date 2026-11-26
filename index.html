@@ -118,6 +118,7 @@ select.in{font-size:16px;appearance:auto}
 .pl .nm{flex:1;min-width:0;font-weight:500;overflow-wrap:anywhere}
 .pl .st{font-size:13px;color:var(--muted)}
 .pl .st.ok{color:var(--ok);font-weight:700}
+.pl .st.bad{color:var(--hot);font-weight:700}
 
 .banner{border-radius:var(--r);padding:16px 18px;font-weight:700;font-size:17px}
 .banner.win{background:color-mix(in srgb,var(--ok) 18%,var(--surface));border:1px solid var(--ok)}
@@ -440,7 +441,7 @@ const meter = s => `<div class="meter" role="img" aria-label="유사도 ${fmtS(s
 /* ================= 계정 없이 하는 모드 (claude.ai 밖에서 링크로 열 때) =================
    실시간 공유는 공개 MQTT 중계 서버로, 방장 비밀 저장은 방장 기기의 localStorage로,
    채점은 내장 사전으로 한다. 게임 코드는 claude.ai 쪽과 똑같은 db/room/user 모양을 그대로 쓴다. */
-const APP_VER = "4";
+const APP_VER = "5";
 const MQ_BROKERS = ["wss://broker.emqx.io:8084/mqtt", "wss://broker.hivemq.com:8884/mqtt"];
 const MQ_ROOT = "hwgame-k7q2/v1";
 function loadScript(src){
@@ -773,13 +774,14 @@ async function hostStep(){
     if(now >= T.deadline){ endHint(); return; }
   }
   if(H.phase === "guess" && T){
+    if(syncLive(H, T)) dirty = true;
     const guessers = Object.keys(H.players).filter(u => u !== T.giver && on.has(u));
-    const done = guessers.filter(u => { const g = presOf(u)?.gs; return g && g.k === T.gkey && g.done; });
+    const done = guessers.filter(u => guessDone(H, T, u));
     if(now >= T.deadline || (guessers.length > 0 && done.length >= guessers.length)){ collectGuesses(); return; }
   }
   if(H.phase === "judging" && T){
     const jd = presOf(T.giver)?.jd;
-    if(jd && jd.k === T.gkey){ finalize(jd); return; }
+    if(jd && jd.k === T.gkey && jd.fin){ finalize(jd); return; }
     if(now >= T.jdl){ skipTurn("출제자 폰이 채점하지 못해 이 턴은 넘어가요"); return; }
   }
   if(H.phase === "result" && T && now >= T.deadline){ advance(); return; }
@@ -829,19 +831,41 @@ function endHint(){
   T.deadline = Date.now() + H.settings.guessSec * 1000; T.dur = H.settings.guessSec * 1000;
   H.phase = "guess"; commit();
 }
-/* 추리 마감: 답안만 모아 두고, 채점은 출제자 폰이 한다 */
+/* 추리 중: 답안을 내는 즉시 출제자 폰이 채점 → 결과를 바로 모두에게 */
+function guessWords(H, T, u){
+  const g = presOf(u)?.gs;
+  if(!g || g.k !== T.gkey || !Array.isArray(g.ws)) return [];
+  const ws = [...new Set(g.ws.slice(0, 2).map(x => checkWord(deobf(x, H.gid), {english:true}).w).filter(Boolean))];
+  return ws.slice(0, 1 + ((H.players[u]?.chances || 0) > 0 ? 1 : 0));
+}
+function syncLive(H, T){
+  const jd = presOf(T.giver)?.jd; T.live ||= {}; let ch = false;
+  for(const u of Object.keys(H.players)){
+    if(u === T.giver) continue;
+    const ws = guessWords(H, T, u); if(!ws.length) continue;
+    const got = jd && jd.k === T.gkey && Array.isArray(jd.res?.[u]) ? jd.res[u] : [];
+    const live = ws.map((w, i) => { const x = got[i]; return x && deobf(x.w || "", H.gid) === w ? {ok: !!x.ok, s: Number.isFinite(Number(x.s)) && x.s !== null ? roundHalf(Number(x.s)) : null, how: String(x.how || "").slice(0, 12)} : {p:1}; });
+    if(JSON.stringify(T.live[u]) !== JSON.stringify(live)){ T.live[u] = live; ch = true; }
+  }
+  return ch;
+}
+function guessDone(H, T, u){
+  const L = T.live?.[u]; if(!L || !L.length) return false;
+  if(L.some(x => x.ok)) return true;
+  if(L.some(x => x.p)) return false;
+  const g = presOf(u)?.gs;
+  return !!(g && g.k === T.gkey && g.done) || L.length >= 1 + ((H.players[u]?.chances || 0) > 0 ? 1 : 0);
+}
+/* 추리 마감: 답안을 모으고, 출제자 폰이 최종 확정(정답 공개)한다 */
 function collectGuesses(){
   const H = S.H, T = H.turn, subs = {};
   for(const u of Object.keys(H.players)){
     if(u === T.giver) continue;
-    const g = presOf(u)?.gs;
-    if(!g || g.k !== T.gkey || !Array.isArray(g.ws)) continue;
-    const ws = [...new Set(g.ws.slice(0, 2).map(x => checkWord(deobf(x, H.gid), {english:true}).w).filter(Boolean))];
-    const use = ws.slice(0, 1 + (H.players[u].chances > 0 ? 1 : 0));
+    const use = guessWords(H, T, u);
     if(use.length === 2) H.players[u].chances--;
     if(use.length) subs[u] = use.map(w => obf(w, H.gid));
   }
-  T.subs = subs; T.jdl = Date.now() + 40000;
+  T.subs = subs; T.jdl = Date.now() + 40000; T.live = null;
   H.phase = "judging"; commit();
 }
 function finalize(jd){
@@ -873,32 +897,42 @@ function skipTurn(msg){
 function advance(){
   const H = S.H, T = H.turn;
   if(T && !T.end){
-    T.stage++; T.deadline = Date.now() + H.settings.hintSec * 1000; T.dur = H.settings.hintSec * 1000; T.res = null; T.gain = null; T.subs = null;
+    T.stage++; T.deadline = Date.now() + H.settings.hintSec * 1000; T.dur = H.settings.hintSec * 1000; T.res = null; T.gain = null; T.subs = null; T.live = null;
     H.phase = "hint"; commit(); return;
   }
   H.turnIdx++; startTurn();
 }
 
-/* 출제자 폰: 추리 마감되면 내 단어로 답안을 자동 채점해 올린다 */
+/* 출제자 폰: 친구가 답을 내면 바로 내 단어로 채점해 올린다 (추리 중 + 마감 확정) */
 async function giverJudge(){
   const G = game(); const T = G?.turn;
-  if(!T || G.phase !== "judging" || T.giver !== S.uid || !T.subs || S.judgedK === T.gkey) return;
-  S.judgedK = T.gkey;
+  if(!T || !["guess", "judging"].includes(G.phase) || T.giver !== S.uid || S.judging) return;
+  const fin = G.phase === "judging";
+  const subs = {};
+  if(fin){ if(!T.subs) return; for(const [u, arr] of Object.entries(T.subs)) subs[u] = arr.map(x => deobf(x, G.gid)); }
+  else for(const u of Object.keys(G.players)) if(u !== T.giver){ const ws = guessWords(G, T, u); if(ws.length) subs[u] = ws; }
+  const sig = T.gkey + (fin ? "!" : "") + JSON.stringify(subs);
+  if(S.judgedSig === sig) return;
   const ans = myWord(G);
-  if(!ans){ toast("이 폰에 내 히든 워드 기록이 없어 채점할 수 없어요"); return; }
-  const subs = {}; for(const [u, arr] of Object.entries(T.subs)) subs[u] = arr.map(x => deobf(x, G.gid));
-  const uniq = [...new Set(Object.values(subs).flat())].filter(w => w !== norm(ans));
-  let sc = {}, fail = false;
-  try{ sc = await scoreLocal(ans, uniq, G, true); }catch{ fail = true; }
-  const mk = withNote => { const res = {}; for(const [u, ws] of Object.entries(subs)) res[u] = ws.map(w => {
-    if(w === norm(ans)) return {ok:true, s:100, how:"정확"};
-    const a = sc[w], ok = !!(G.settings.lenient && a?.same);
-    return {ok, s: a ? a.s : null, how: ok ? "표기·번역 인정" : "", note: withNote && a ? obf(explain(a).slice(0, 40), G.gid) : ""};
-  }); return res; };
-  const jd = r => ({k:T.gkey, res:r, a:obf(ans, G.gid), f:fail});
-  S.myPres.jd = jd(mk(true));
-  try{ await S.room.presence({app:"hw", uid:S.uid, jd:S.myPres.jd}); }
-  catch{ S.myPres.jd = jd(mk(false)); S.room.presence({app:"hw", uid:S.uid, jd:S.myPres.jd}).catch(() => {}); }
+  if(!ans){ if(S.judgedSig !== "none" + T.gkey){ S.judgedSig = "none" + T.gkey; toast("이 폰에 내 히든 워드 기록이 없어 채점할 수 없어요"); } return; }
+  S.judging = true;
+  try{
+    S.jcache ||= {}; const C = S.jcache[T.gkey] ||= {};
+    const uniq = [...new Set(Object.values(subs).flat())].filter(w => w !== norm(ans) && !(w in C));
+    let fail = false;
+    if(uniq.length){ try{ Object.assign(C, await scoreLocal(ans, uniq, G, true)); }catch{ fail = true; } }
+    const mk = withNote => { const res = {}; for(const [u, ws] of Object.entries(subs)) res[u] = ws.map(w => {
+      if(w === norm(ans)) return {w:obf(w, G.gid), ok:true, s:100, how:"정확"};
+      const a = C[w], ok = !!(G.settings.lenient && a?.same);
+      return {w:obf(w, G.gid), ok, s: a ? a.s : null, how: ok ? "표기·번역 인정" : "", note: withNote && a ? obf(explain(a).slice(0, 40), G.gid) : ""};
+    }); return res; };
+    const jd = r => ({k:T.gkey, res:r, f:fail, ...(fin ? {fin:true, a:obf(ans, G.gid)} : {})});
+    S.myPres.jd = jd(mk(true));
+    try{ await S.room.presence({app:"hw", uid:S.uid, jd:S.myPres.jd}); }
+    catch{ S.myPres.jd = jd(mk(false)); await S.room.presence({app:"hw", uid:S.uid, jd:S.myPres.jd}).catch(() => {}); }
+    S.judgedSig = sig;
+    if(S.isHost) hostKick();
+  } finally { S.judging = false; }
 }
 
 /* 누구나 누르는 버튼 → 엔진 폰에 요청으로 전달 */
@@ -987,12 +1021,20 @@ const ACT = {
   },
   chance(){ S.chanceOn = !S.chanceOn; render(); },
   guess(){
-    const G = game(), T = G.turn; if(!T) return;
+    const G = game(), T = G.turn; if(!T || G.phase !== "guess") return;
     const a = checkWord($("#g1")?.value, {english:true, kind:"추측"}); if(a.err) return toast(a.err);
-    const ws = [a.w];
-    if(S.chanceOn){ const b = checkWord($("#g2")?.value, {english:true, kind:"추가 추측"}); if(b.err) return toast(b.err); if(b.w !== a.w) ws.push(b.w); }
-    pres({gs:{k:T.gkey, ws:ws.map(w => obf(w, G.gid)), done:true}});
+    const prev = S.myPres.gs && S.myPres.gs.k === T.gkey ? LS.get(`gs:${T.gkey}`, []) : [];
+    if(prev.includes(a.w)) return toast("이미 낸 단어예요");
+    const ws = [...prev, a.w].slice(0, 2);
+    pres({gs:{k:T.gkey, ws:ws.map(w => obf(w, G.gid)), done:false}});
     LS.set(`gs:${T.gkey}`, ws);
+    if(S.isHost) hostKick();
+    render();
+  },
+  stopGuess(){
+    const G = game(), T = G.turn; if(!T || !S.myPres.gs || S.myPres.gs.k !== T.gkey) return;
+    pres({gs:{...S.myPres.gs, done:true}});
+    if(S.isHost) hostKick();
     render();
   },
   reveal(){ S.reveal = !S.reveal; render(); },
@@ -1082,8 +1124,8 @@ function nowLine(G){
   switch(G.phase){
     case "lobby": t = "친구들이 다 들어오면 아무나 ‘게임 시작’을 누르세요. 진행과 채점은 앱이 알아서 해요."; break;
     case "pick": mine = !!me && me.picked !== G.round && S.myPres.pk !== `${G.gid}:${G.round}`; t = mine ? "봉투에서 숨길 단어 하나를 골라 ‘이 단어로 숨기기’를 누르세요." : "다른 사람이 단어를 고르는 중이에요."; break;
-    case "hint": mine = giver; t = giver ? "힌트 단어를 입력해 유사도를 재 보세요. 95% 이상이 나오면 그 단어가 바로 공개돼요." : `${gn} 님이 힌트를 찾는 중이에요. 공개되면 바로 추리 시작!`; break;
-    case "guess": mine = !giver && !!me && !submitted; t = giver ? "친구들이 내 단어를 추리하는 중이에요." : submitted ? "제출 완료! 다른 사람을 기다리는 중이에요." : "공개된 힌트를 보고 정답이라고 생각하는 단어를 적어 내세요."; break;
+    case "hint": mine = giver; t = giver ? "힌트 단어를 입력해 유사도를 재 보세요. 시도한 단어와 %는 모두에게 보여요. 95% 이상이면 바로 추리로 넘어가요." : `${gn} 님이 시도하는 힌트와 %가 아래에 실시간으로 떠요. 보면서 미리 추리하세요!`; break;
+    case "guess": mine = !giver && !!me && !submitted; t = giver ? "친구들이 답을 내면 바로 채점돼요." : submitted ? "답을 냈어요. 채점 결과는 바로 아래에 떠요." : "공개된 힌트를 보고 정답이라고 생각하는 단어를 적어 내세요. 내는 즉시 채점돼요."; break;
     case "judging": t = "답안을 채점하는 중이에요."; break;
     case "result": t = "결과를 확인하세요. 잠시 후 자동으로 넘어가요."; break;
     case "roundEnd": t = "라운드 끝! 잠시 후 다음 라운드가 자동으로 시작돼요."; break;
@@ -1153,9 +1195,9 @@ function rulesBlock(open){
   return `<details class="rules" ${open ? "open" : ""}><summary>게임 방법</summary>
   <ol>
     <li><b>단어 고르기</b> — 각자 봉투(일반 명사 5개)에서 히든 워드 1개를 몰래 고릅니다. 2라운드엔 남은 단어 중에서.</li>
-    <li><b>힌트 찾기</b> — 출제자는 제한 시간 안에 힌트 단어를 최대 10번 시도합니다. 시도와 유사도는 <b>출제자만</b> 봅니다.</li>
+    <li><b>힌트 찾기</b> — 출제자는 제한 시간 안에 힌트 단어를 최대 10번 시도합니다. 시도한 단어와 유사도는 <b>모두에게 실시간으로</b> 보입니다(설명은 정답 공개 후).</li>
     <li><b>95%의 벽</b> — 유사도 95% 이상이 나오면 그 단어가 즉시 공개됩니다. 10번 안에 못 넘기면 가장 높았던 단어가 공개돼요.</li>
-    <li><b>추리</b> — 나머지는 공개된 힌트(단어 + %)만 보고 동시에 답을 냅니다. 찬스를 쓰면 한 단어 더.</li>
+    <li><b>추리</b> — 나머지는 힌트를 보고 답을 냅니다. 내는 즉시 앱이 채점해 정답·오답이 바로 떠요. 틀리면 찬스로 한 번 더.</li>
     <li><b>점수</b> — 맞힌 사람마다 +1점, 그 턴 끝. 아무도 못 맞히면 출제자가 +1(1차)·+2(2차)·+3(3차)점을 받고 다음 힌트로. 3차까지.</li>
     <li><b>2라운드는 모든 점수 ×2</b>. 마지막 점수가 가장 높은 사람이 우승.</li>
   </ol>
@@ -1247,6 +1289,15 @@ function revealedTiles(G, label = true){
   if(!R.length) return "";
   return `<div class="hint-tiles">${R.map(h => `<div class="tile"><div style="min-width:0">${label ? `<div class="lb">${h.st}차 공개 힌트</div>` : ""}<div class="w">${h.w ? esc(h.w) : "힌트 없음"}</div>${G.turn?.answer && h.note ? `<div class="fine">${esc(deobf(h.note, G.gid))}</div>` : ""}</div><div class="s" style="color:${heat(h.s)}">${h.s == null ? "" : fmtS(h.s) + "%"}</div></div>`).join("")}</div>`;
 }
+/* 출제자가 시도한 힌트 전부(단어 + %) — 모두에게 공개. 사용 불가 단어는 정답이 새지 않게 가린다 */
+function publicTries(G, title = "출제자가 시도한 힌트"){
+  const T = G.turn; if(!T?.tries?.length) return "";
+  const list = T.tries.slice().reverse().map(t => {
+    const word = deobf(t.w, G.gid), note = T.answer ? deobf(t.note || "", G.gid) : "";
+    return `<div class="try ${t.ok ? "" : "bad"}"><div class="w">${t.ok ? esc(word) : "사용 불가 단어"}${t.st !== T.stage ? `<span class="tag">${t.st}차</span>` : ""}${t.ok && t.s >= 95 ? `<span class="tag hot">95% 돌파</span>` : ""}</div><div class="s" style="color:${heat(t.ok ? t.s : null)}">${t.ok ? fmtS(t.s) + "%" : "불가"}</div>${t.ok ? meter(t.s) : ""}${note && t.ok ? `<div class="note">${esc(note)}</div>` : ""}</div>`;
+  }).join("");
+  return `<div class="card"><p class="eyebrow" style="margin-bottom:4px">${title} · ${T.tries.filter(t => t.ok).length}개</p>${list}</div>`;
+}
 function viewHint(G){
   const T = G.turn, mine = T.giver === S.uid, s = G.settings, mult = G.round;
   const stageTries = T.tries.filter(t => t.st === T.stage);
@@ -1266,7 +1317,7 @@ function viewHint(G){
       <p class="small muted">95% 이상 → 그 단어가 바로 공개. 못 넘기면 가장 높은 단어가 공개돼요. 아무도 못 맞히면 내가 <b>+${T.stage * mult}점</b>.</p>
       ${T.aiErr ? `<p class="small" style="color:var(--hot)">${esc(T.aiErr)} — 같은 단어를 다시 넣어 주세요</p>` : ""}
     </div>
-    ${list ? `<div class="card"><p class="eyebrow" style="margin-bottom:4px">내 시도 · 나만 보여요</p>${list}</div>` : ""}
+    ${list ? `<div class="card"><p class="eyebrow" style="margin-bottom:4px">내 시도 · 단어와 %는 모두에게 보여요 (설명은 나만)</p>${list}</div>` : ""}
     ${T.revealed.length ? `<div class="stack"><p class="eyebrow">이미 공개된 힌트</p>${revealedTiles(G)}</div>` : ""}
     ${stageDots(G)}`;
   }
@@ -1276,33 +1327,46 @@ function viewHint(G){
     <div class="row"><span class="spin"></span><span class="muted">시도 <b class="num">${validN}</b> / ${s.maxTries}번</span></div>
     <p class="small muted">아무도 못 맞히면 출제자 +${T.stage * mult}점. 맞히면 맞힌 사람마다 +${mult}점.</p>
   </div>
+  ${publicTries(G) || `<div class="card muted small">아직 시도한 힌트가 없어요. 시도하면 여기에 바로 떠요.</div>`}
   ${T.revealed.length ? `<div class="stack"><p class="eyebrow">지금까지 공개된 힌트</p>${revealedTiles(G)}</div>` : ""}
   ${stageDots(G)}`;
 }
+function liveTag(G, u){
+  const T = G.turn, L = T.live?.[u] || [];
+  if(!L.length) return {t:"생각 중", c:""};
+  if(L.some(x => x.ok)) return {t:"정답!", c:"ok"};
+  if(L.some(x => x.p)) return {t:"채점 중…", c:""};
+  return guessDone(G, T, u) ? {t:"오답", c:"bad"} : {t:"오답 · 찬스 고민 중", c:"bad"};
+}
 function viewGuess(G){
   const T = G.turn, mine = T.giver === S.uid, me = G.players[S.uid], on = onlineSet();
-  const statusList = `<div class="plist">${Object.entries(G.players).filter(([u]) => u !== T.giver && on.has(u)).map(([u, p]) => { const g = u === S.uid ? S.myPres.gs : presOf(u)?.gs; const d = g && g.k === T.gkey && g.done; return `<div class="pl"><span class="nm">${esc(p.nick)}</span><span class="st ${d ? "ok" : ""}">${d ? "제출" : "생각 중"}</span></div>`; }).join("")}</div>`;
-  const tiles = `<div class="stack"><p class="eyebrow">공개된 힌트</p>${revealedTiles(G)}</div>`;
-  if(mine) return `${tiles}<div class="card stack"><p class="eyebrow">친구들이 추리하는 중</p>${statusList}</div>`;
+  const statusList = `<div class="plist">${Object.entries(G.players).filter(([u]) => u !== T.giver && on.has(u)).map(([u, p]) => { const st = liveTag(G, u); return `<div class="pl"><span class="nm">${esc(p.nick)}</span><span class="st ${st.c}">${st.t}</span></div>`; }).join("")}</div>`;
+  const tiles = `<div class="stack"><p class="eyebrow">공개된 힌트</p>${revealedTiles(G)}</div>${publicTries(G, "출제자가 시도한 힌트 전부")}`;
+  if(mine) return `<div class="card stack"><p class="eyebrow">친구들 답안 · 내는 즉시 채점</p>${statusList}</div>${tiles}`;
   if(!me) return `${tiles}<div class="card"><p class="muted">관전 중이에요. 다음 라운드부터 참가해요.</p></div>`;
-  const g = S.myPres.gs;
-  if(g && g.k === T.gkey && g.done){
-    const ws = LS.get(`gs:${T.gkey}`, []);
-    return `${tiles}<div class="card stack"><p class="eyebrow">제출 완료</p><p class="title">${ws.map(esc).join(" · ")}</p><p class="muted small">모두 제출하거나 시간이 끝나면 채점해요.</p>${statusList}</div>`;
-  }
-  const canChance = me.chances > 0;
-  return `${tiles}
-  <div class="card stack">
-    <div><p class="eyebrow">${nickOf(G, T.giver)} 님의 히든 워드는?</p><p class="small muted">띄어쓰기는 무시해요.${G.settings.lenient ? " 표기 변형·영어 번역도 정답으로 쳐요." : ""}</p></div>
-    <input class="in" id="g1" maxlength="20" placeholder="정답이라고 생각하는 단어" autocomplete="off" enterkeyhint="done" data-enter="guess">
-    ${S.chanceOn ? `<input class="in" id="g2" maxlength="20" placeholder="찬스: 한 단어 더" autocomplete="off" data-enter="guess">` : ""}
-    <div class="row"><button class="btn ghost sm" data-act="chance" ${canChance ? "" : "disabled"}>${S.chanceOn ? "찬스 취소" : `찬스 쓰기 (남은 ${me.chances})`}</button></div>
-    <button class="btn" data-act="guess">제출하기</button>
-  </div>
-  <div class="card">${statusList}</div>`;
+  const ws = S.myPres.gs && S.myPres.gs.k === T.gkey ? LS.get(`gs:${T.gkey}`, []) : [];
+  const L = T.live?.[S.uid] || [];
+  const myRes = ws.map((w, i) => {
+    const x = L[i];
+    const right = !x || x.p ? `<span class="row small"><span class="spin"></span>채점 중</span>` : x.ok ? `<span class="tag ok">${esc(x.how || "정답")}</span>` : `<span class="s" style="color:${heat(x.s)}">${x.s == null ? "오답" : fmtS(x.s) + "%"}</span>`;
+    return `<div class="gw"><span class="w">${esc(w)}</span>${right}</div>${x && !x.p && !x.ok && x.s != null ? meter(x.s) : ""}`;
+  }).join("");
+  const solved = L.some(x => x.ok), pending = ws.length > L.filter(x => !x.p).length;
+  const doneNow = guessDone(G, T, S.uid) || (S.myPres.gs?.done && !pending);
+  const canChance = !solved && !pending && !doneNow && ws.length === 1 && me.chances > 0;
+  const input = (ph, label) => `<input class="in" id="g1" maxlength="20" placeholder="${ph}" autocomplete="off" enterkeyhint="done" data-enter="guess"><button class="btn" data-act="guess">${label}</button>`;
+  let box;
+  if(!ws.length) box = `<div><p class="eyebrow">${nickOf(G, T.giver)} 님의 히든 워드는?</p><p class="small muted">내는 즉시 채점돼요. 띄어쓰기는 무시해요.${G.settings.lenient ? " 표기 변형·영어 번역도 정답으로 쳐요." : ""}${me.chances > 0 ? ` 틀리면 찬스(남은 ${me.chances})로 한 번 더 낼 수 있어요.` : ""}</p></div>${input("정답이라고 생각하는 단어", "제출하고 바로 채점")}`;
+  else if(solved) box = `<div class="banner win">정답! 결과 화면에서 점수가 올라가요 (+${G.round}점)</div>`;
+  else if(pending) box = `<div class="row"><span class="spin"></span><span>출제자 폰이 채점하는 중…</span></div>`;
+  else if(canChance) box = `<div class="banner lose">아쉬워요, 오답이에요</div><p class="small muted">찬스를 쓰면 한 단어 더 낼 수 있어요 (남은 찬스 ${me.chances}).</p>${input("찬스: 한 단어 더", "찬스 쓰고 바로 채점")}<button class="btn ghost sm" data-act="stopGuess">여기까지 할게요</button>`;
+  else box = `<div class="banner lose">오답이에요. 다른 사람을 기다리는 중</div>`;
+  return `<div class="card stack">${myRes ? `<div><p class="eyebrow" style="margin-bottom:4px">내 답안</p>${myRes}</div>` : ""}${box}</div>
+  <div class="card"><p class="eyebrow" style="margin-bottom:4px">친구들 · 실시간 채점</p>${statusList}</div>
+  ${tiles}`;
 }
 function viewJudging(G){
-  return `${revealedTiles(G)}<div class="card row"><span class="spin"></span><span>답안을 채점하는 중…</span></div>`;
+  return `<div class="card row"><span class="spin"></span><span>결과를 정리하는 중…</span></div>${revealedTiles(G)}${publicTries(G, "출제자가 시도한 힌트 전부")}`;
 }
 function viewResult(G){
   const T = G.turn, res = T.res || {}, gain = T.gain || {};
@@ -1316,6 +1380,7 @@ function viewResult(G){
   ${T.answer ? `<div class="card center stack"><p class="eyebrow">${nickOf(G, T.giver)} 님의 히든 워드</p><p class="big">${esc(T.answer)}</p></div>` : ""}
   ${revealedTiles(G)}
   ${rows ? `<div class="card"><p class="eyebrow" style="margin-bottom:4px">답안과 정답 유사도</p>${rows}</div>` : `<div class="card muted">제출된 답이 없어요.</div>`}
+  ${publicTries(G, "출제자가 시도한 힌트 전부")}
   ${T.aiFail ? `<p class="fine">AI 판정에 실패해 글자가 정확히 같은 답만 인정했어요.</p>` : ""}
   <p class="fine center">잠시 후 자동으로 넘어가요</p>`;
 }
@@ -1386,9 +1451,12 @@ function installMock(){
         const w = WORDS[Math.floor(Math.random() * WORDS.length)];
         setPeer(id, {act:{k:`${T.id}.${T.stage}.${Date.now().toString(36)}`, w:obf(w, G.gid), r:{ok:true, s:fake(sec, w), n:obf("데모 채점", G.gid), e:""}}});
       }
-      if(G.phase === "judging" && T?.giver === id && T.subs && cur.jd?.k !== T.gkey){
-        const res = {}; for(const [u, arr] of Object.entries(T.subs)) res[u] = arr.map(x => { const w = deobf(x, G.gid); return w === sec ? {ok:true, s:100, how:"정확"} : {ok:false, s:fake(sec, w), how:"", note:obf("데모", G.gid)}; });
-        setPeer(id, {jd:{k:T.gkey, res, a:obf(sec, G.gid), f:false}});
+      if((G.phase === "judging" || G.phase === "guess") && T?.giver === id){
+        const fin = G.phase === "judging", res = {};
+        const src = fin ? Object.entries(T.subs || {}).map(([u, arr]) => [u, arr.map(x => deobf(x, G.gid))]) : Object.keys(G.players).filter(u => u !== id).map(u => [u, guessWords(G, T, u)]).filter(([, a]) => a.length);
+        for(const [u, ws] of src) res[u] = ws.map(w => w === sec ? {w:obf(w, G.gid), ok:true, s:100, how:"정확"} : {w:obf(w, G.gid), ok:false, s:fake(sec, w), how:"", note:obf("데모", G.gid)});
+        const jd = {k:T.gkey, res, f:false, ...(fin ? {fin:true, a:obf(sec, G.gid)} : {})};
+        if(JSON.stringify(cur.jd) !== JSON.stringify(jd)) setPeer(id, {jd});
       }
       if(G.phase === "guess" && T?.giver !== id && !(cur.gs && cur.gs.k === T.gkey) && Math.random() < .5){
         const ans = T.giver === ME ? LS.get(`pick:${G.gid}:${G.round}`, null) : botSec[pk + T.giver];
@@ -1401,4 +1469,3 @@ function installMock(){
 
 boot();
 </script>
-</body></html>
